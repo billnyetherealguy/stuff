@@ -6,7 +6,7 @@ import geojsonvt from 'geojson-vt';
 import vtpbf from 'vt-pbf';
 import { buildWorld, worldLayers } from './world.mjs';
 
-const MIN_ZOOM = { building: 13, transportation: 8, transportation_name: 12, park: 9, place: 0, water: 0, boundary: 0 };
+const MIN_ZOOM = { building: 13, poi: 14, transportation: 8, transportation_name: 12, park: 9, place: 0, water: 0, boundary: 0 };
 
 export function createTiles() {
   const world = buildWorld();

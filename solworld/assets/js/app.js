@@ -21,11 +21,12 @@ import { BurnerWallet, verifySignature } from './burner.js';
 import { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } from './market.js';
 import { priceBuilding } from './pricing.js';
 import { sunPosition } from './sun.js';
-import { OsmClient, buildingHeights } from './osm.js';
+import { buildingSkin } from './skin.js';
+import { OsmClient, buildingHeights, geoKey, geoKeyCenter, isOsmKey } from './osm.js';
 import { Geocoder, PhotoFinder, SolPrice, buildingKind, buildingTitle } from './info.js';
 import { MapController, COLORS } from './map.js';
 import { FEATURED, placeLabel } from './cities.js';
-import { distanceM, pointInPolygon, polygonAreaM2 } from './geo.js';
+import { distanceM, interiorPoint, pointInPolygon, polygonAreaM2 } from './geo.js';
 import { $, avatar, copyText, debounce, fmtInt, fmtSol, h, isTouch, prefersReducedMotion, shortAddr, storage } from './util.js';
 import { Toasts } from './ui/feedback.js';
 import { BuildingPanel } from './ui/panel.js';
@@ -211,6 +212,8 @@ async function boot() {
     onResult: (r) => {
       hero.hide();
       if (r.osmKey && r.isBuilding) return openKey(r.osmKey, r.center);
+      // A street address (e.g. a house): go there and open the building at that spot.
+      if (r.isBuilding && r.center) return openAt(r.center);
       if (r.extent) mapc.flyToExtent(r.extent, { maxZoom: r.kind === 'city' ? 14 : 16.5 });
       else if (r.center) mapc.flyTo(r.center, 16);
     },
@@ -304,7 +307,7 @@ async function boot() {
     return rec.owner === wallet.address ? 'mine' : 'owned';
   }
 
-  async function selectPick(pick, { retry = 1 } = {}) {
+  async function selectPick(pick) {
     const seq = ++selectSeq;
     hero.hide();
     mapc.stopOrbit();
@@ -337,17 +340,53 @@ async function boot() {
     try {
       const building = pick.tileKey ? osm.byKey.get(pick.tileKey) : await osm.buildingAt(pick.point, pick.part);
       if (seq !== selectSeq) return;
-      if (!building) {
-        panel.showError('not-building');
-        return;
-      }
-      showBuilding(building, { tileTop: pick.top });
+      // Not in OpenStreetMap's answer: still a building on the map, so identify it by its footprint.
+      showBuilding(building || tileBuilding(pick), { tileTop: pick.top });
     } catch (err) {
       if (seq !== selectSeq) return;
-      if (retry > 0) return selectPick(pick, { retry: retry - 1 });
-      console.warn('[solworld] building lookup failed', err);
-      panel.showError('network', () => selectPick(pick));
+      console.warn('[solworld] building lookup failed, using the map footprint', err);
+      // OpenStreetMap servers are busy: every building is still buyable, identified by its footprint.
+      showBuilding(tileBuilding(pick), { tileTop: pick.top });
     }
+  }
+
+  /** A building made from the map tile alone (no OpenStreetMap lookup needed). */
+  function tileBuilding(pick, key) {
+    const center = interiorPoint(pick.part);
+    return {
+      key: key || pick.tileKey || geoKey(center),
+      tags: { building: 'yes', height: String(pick.top || 5) },
+      polygons: [pick.part],
+      center,
+      area: polygonAreaM2(pick.part),
+      fromTiles: true,
+    };
+  }
+
+  async function openAt(lngLat) {
+    const seq = ++selectSeq;
+    const pick = await tileBuildingNear(lngLat).catch(() => null);
+    if (seq !== selectSeq) return;
+    if (pick) selectPick(pick);
+    else toast({ title: 'No building right at that address', body: 'Tap the house on the map to open it.', tone: 'info' });
+  }
+
+  /** Waits for the map to show `lngLat` up close, then reads the building there from the tiles. */
+  async function tileBuildingNear(lngLat) {
+    mapc.stopOrbit();
+    mapc.map.jumpTo({ center: lngLat, zoom: Math.max(mapc.zoom, 17), pitch: 0 });
+    await new Promise((r) => mapc.map.once('idle', r));
+    // Address points often sit a few meters off the building: search outward a little.
+    const at = mapc.map.project(lngLat);
+    for (const radius of [0, 10, 22, 36]) {
+      for (let a = 0; a < (radius ? 8 : 1); a++) {
+        const p = { x: at.x + radius * Math.cos((a * Math.PI) / 4), y: at.y + radius * Math.sin((a * Math.PI) / 4) };
+        const ll = mapc.map.unproject([p.x, p.y]);
+        const pick = mapc.pickAt(p, ll);
+        if (pick) return pick;
+      }
+    }
+    return null;
   }
 
   function showBuilding(building, { tileTop = null, fly = true } = {}) {
@@ -366,8 +405,25 @@ async function boot() {
     geocoder.reverse(building.center).then((address) => panel.setAddress(building.key, address));
     // Photos match the time of day at the building: night photos after dark.
     const night = sunPosition(building.center[0], building.center[1]).phase !== 'day';
-    photos.find({ key: building.key, tags: building.tags, center: building.center, night }).then((photo) => panel.setPhoto(building.key, photo));
+    photos.find({ key: building.key, tags: building.tags, center: building.center, night }).then((photo) => {
+      panel.setPhoto(building.key, photo);
+      if (photo?.exact) skinWithPhoto(building, photo, tileTop);
+    });
     solPrice.get().then((usd) => usd && panel.setUsd(usd));
+  }
+
+  /** Dresses the selected 3D building in its real photo (lit windows glow after dark). */
+  async function skinWithPhoto(building, photo, tileTop) {
+    try {
+      const url = await photos.corsUrl(photo);
+      if (!url || current?.key !== building.key) return;
+      const { phase } = sunPosition(building.center[0], building.center[1]);
+      const image = await buildingSkin(url, { phase, nightPhoto: !!photo.night });
+      if (current?.key !== building.key) return;
+      mapc.setSkin({ key: building.key, image, height: Math.max(tileTop || 0, buildingHeights(building.tags).top) });
+    } catch (err) {
+      console.warn('[solworld] photo texture unavailable', err);
+    }
   }
 
   async function openKey(key, near) {
@@ -375,19 +431,27 @@ async function boot() {
     hero.hide();
     const seq = ++selectSeq;
     let building = osm.byKey.get(key);
-    if (!building) {
+    const rec = registry.state.buildings.get(key);
+    near ||= rec ? [rec.lng, rec.lat] : isOsmKey(key) ? undefined : geoKeyCenter(key);
+    if (!building && isOsmKey(key)) {
       if (near) mapc.flyTo(near, 16.2);
       const loading = toast({ title: 'Finding building…', tone: 'pending' });
       try {
-        building = (await osm.buildingsByKeys([key])).get(key);
+        building = (await osm.buildingsByKeys([key], { deadlineMs: 7000 })).get(key);
       } catch (err) {
         console.warn('[solworld] building fetch failed', err);
       }
       loading.dismiss();
     }
     if (seq !== selectSeq) return;
+    // No OpenStreetMap answer (or a footprint key): read the building straight from the map.
+    if (!building && near) {
+      const pick = await tileBuildingNear(near).catch(() => null);
+      if (seq !== selectSeq) return;
+      if (pick) building = tileBuilding(pick, key);
+    }
     if (!building) {
-      toast({ title: 'Couldn’t load that building', body: 'OpenStreetMap didn’t return it. It may have been removed, or the service is busy.', tone: 'error' });
+      toast({ title: 'Couldn’t find that building', body: 'Try zooming in and tapping it on the map.', tone: 'error' });
       return;
     }
     showBuilding(building);
@@ -488,7 +552,7 @@ async function boot() {
     if (current.building.provisional) {
       // Price depends on the full OSM details; wait for them.
       await current.building.hydrate;
-      if (!current || current.building.provisional) return void toast({ title: 'Still loading this building', body: 'Try again in a moment.', tone: 'info' });
+      if (!current) return;
     }
     const { building } = current;
     const { key } = building;
@@ -823,7 +887,7 @@ async function boot() {
   async function audit(box, btn) {
     btn?.setAttribute('disabled', '');
     box.replaceChildren(h('div', { class: 'search-loading' }, h('span', { class: 'spinner' }), 'Recomputing prices from OpenStreetMap…'));
-    const recs = [...registry.state.buildings.values()].filter((b) => b.acquired !== 'sale' && !b.seed).slice(-300);
+    const recs = [...registry.state.buildings.values()].filter((b) => isOsmKey(b.key) && b.acquired !== 'sale' && !b.seed).slice(-300);
     try {
       const found = await osm.buildingsByKeys(recs.map((r) => r.key));
       const flagged = [];
@@ -907,7 +971,7 @@ async function boot() {
 
   const outlineMisses = new Set();
   async function prefetchOutlines(records) {
-    const need = records.filter((r) => !mapc.outlines.has(r.key) && !outlineMisses.has(r.key));
+    const need = records.filter((r) => isOsmKey(r.key) && !mapc.outlines.has(r.key) && !outlineMisses.has(r.key));
     if (!need.length) return;
     try {
       const found = await osm.buildingsByKeys(need.map((r) => r.key));
@@ -927,8 +991,8 @@ async function boot() {
   // Load the buildings around the view in the background so taps are instant.
   const prefetchView = debounce(() => {
     const z = mapc.zoom;
-    if (z < 15.2 || mapc.map.isMoving()) return;
-    osm.prefetchArea(mapc.center, z >= 17 ? 220 : z >= 16 ? 320 : 450);
+    if (z < 16.2 || mapc.map.isMoving()) return;
+    osm.prefetchArea(mapc.center, z >= 17 ? 160 : 230);
   }, 700);
   mapc.map.on('moveend', prefetchView);
   mapc.map.on('moveend', scheduleOutlines);
@@ -1028,7 +1092,7 @@ async function boot() {
   }
 
   function route() {
-    const m = /^#\/b\/([wr][1-9]\d{0,15})$/.exec(location.hash);
+    const m = /^#\/b\/([wrg][1-9]\d{0,15})$/.exec(location.hash);
     if (m) openKey(m[1]);
     else if (location.hash === '#/operator') openOperator(ctx);
   }

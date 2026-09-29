@@ -156,6 +156,19 @@ export class PhotoFinder {
     return this.cache.get(id);
   }
 
+  /** A pixel-readable (CORS) URL for a photo, to texture the 3D building with it. */
+  async corsUrl(photo) {
+    if (!photo?.url) return null;
+    if (/^https:\/\/upload\.wikimedia\.org\//.test(photo.url)) return photo.url;
+    if (!this.commonsApi || !photo.url.startsWith(this.commonsFile)) return null;
+    const name = decodeURIComponent(photo.url.slice(this.commonsFile.length).split('?')[0]).replace(/_/g, ' ');
+    const json = await fetchJson(
+      `${this.commonsApi}?action=query&format=json&origin=*&titles=${encodeURIComponent(`File:${name}`)}&prop=imageinfo&iiprop=url&iiurlwidth=640`,
+      { timeoutMs: 8000 },
+    );
+    return Object.values(json.query?.pages || {})[0]?.imageinfo?.[0]?.thumburl || null;
+  }
+
   async _claim(qid, property) {
     const json = await fetchJson(`${this.wikidata}?action=wbgetclaims&entity=${qid}&property=${property}&format=json&origin=*`, { timeoutMs: 8000 });
     return json.claims?.[property]?.[0]?.mainsnak?.datavalue?.value || null;

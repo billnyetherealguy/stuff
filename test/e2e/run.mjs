@@ -120,7 +120,7 @@ async function openAvailable(page, offsets) {
 }
 
 async function demo(env) {
-  const { page, log, browser } = await launch({ ...env, config: {} });
+  const { page, log, browser, harness } = await launch({ ...env, config: {} });
   activePage = page;
   try {
     await step('demo: loads with no errors, hero over globe', async () => {
@@ -362,9 +362,23 @@ async function demo(env) {
       assert.ok(await page.evaluate((a) => window.solworld.registry.state.owners.get(a)?.count >= 2, me));
     });
 
+    await step('demo: with OpenStreetMap servers down, buildings still open and can be bought', async () => {
+      harness.setOverpassDown(true);
+      await closePanel(page);
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9931, 40.7392], zoom: 16.4, pitch: 0 }));
+      await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+      await openAvailable(page, [[0.0011, 0.0004], [-0.0012, -0.0006], [0.0016, -0.0009], [-0.002, 0.0012], [0.0005, 0.0019]]);
+      const key = await page.evaluate(() => location.hash.split('/').pop());
+      assert.match(key, /^[wrg]\d+$/);
+      assert.ok(await page.getByRole('button', { name: /^Buy for|^Deposit to buy/ }).count(), 'buyable');
+      await page.getByRole('button', { name: /^Buy for/ }).click();
+      await waitTone(page, 'mine');
+      harness.setOverpassDown(false);
+    });
+
     await step('demo: no page errors', async () => {
       assert.deepEqual(log.errors, []);
-      const bad = log.console.filter((l) => /^error/.test(l));
+      const bad = log.console.filter((l) => /^error/.test(l) && !/status of 504/.test(l)); // 504s: the simulated outage
       assert.deepEqual(bad, []);
     });
   } finally {

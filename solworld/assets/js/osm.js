@@ -102,6 +102,24 @@ export function buildingHeights(tags = {}) {
   };
 }
 
+/**
+ * A building key from its footprint location, for buildings we can see in the
+ * map tiles but couldn't look up: "g" + the footprint's center rounded to
+ * ~1 m. Everyone sees the same tiles, so everyone derives the same key.
+ */
+export function geoKey([lng, lat]) {
+  const latI = Math.round((lat + 90) * 1e5);
+  const lngI = Math.round((lng + 180) * 1e5);
+  return `g${latI * 1e8 + lngI}`;
+}
+
+export function geoKeyCenter(key) {
+  const n = Number(String(key).slice(1));
+  return [((n % 1e8) - 18_000_000) / 1e5, (Math.floor(n / 1e8) - 9_000_000) / 1e5];
+}
+
+export const isOsmKey = (key) => /^[wr]/.test(key || '');
+
 export class OsmClient {
   constructor({ endpoints, storage, timeoutMs = 12_000 }) {
     this.endpoints = endpoints;
@@ -137,7 +155,7 @@ export class OsmClient {
    * request is hedged: the next server is tried in parallel if the first is
    * slow, and the first good answer wins (the others are cancelled).
    */
-  async query(ql, { hedgeMs = 1500 } = {}) {
+  async query(ql, { hedgeMs = 1200, deadlineMs = 0 } = {}) {
     if (this.inflight.has(ql)) return this.inflight.get(ql);
     const run = new Promise((resolve, reject) => {
       const n = this.endpoints.length;
@@ -181,6 +199,15 @@ export class OsmClient {
       };
       launch();
       for (let i = 1; i < n; i++) timers.push(setTimeout(launch, hedgeMs * i));
+      if (deadlineMs) {
+        timers.push(
+          setTimeout(() => {
+            if (done) return;
+            finish();
+            reject(new Error('Overpass timed out'));
+          }, deadlineMs),
+        );
+      }
     });
     this.inflight.set(ql, run);
     try {
@@ -206,7 +233,8 @@ export class OsmClient {
    * Loads every building around `center` in the background, so clicks nearby
    * resolve instantly from memory. Skips areas already covered.
    */
-  async prefetchArea(center, radius = 350) {
+  async prefetchArea(center, radius = 250) {
+    if (this.inflight.size) return; // never compete with a lookup someone is waiting for
     if (this.coverage.some((c) => distanceM(center, c.center) <= c.radius - radius * 0.6)) return;
     const key = `${center[0].toFixed(3)},${center[1].toFixed(3)}`;
     if (this._prefetching === key) return;
@@ -254,7 +282,7 @@ export class OsmClient {
       const ql =
         `[out:json][timeout:12];(way[building]${around};relation[building][type=multipolygon]${around};` +
         `way[aeroway~"^(terminal|hangar)$"]${around};);out tags geom;`;
-      const json = await this.query(ql);
+      const json = await this.query(ql, { deadlineMs: 7000 });
       this.coverage.push({ center: point, radius });
       if (this.coverage.length > 200) this.coverage.shift();
       const best = this._ingest(json, point);
@@ -288,10 +316,11 @@ export class OsmClient {
   }
 
   /** Fetches buildings by key ("w123", "r456"). Returns a Map of key -> building. */
-  async buildingsByKeys(keys) {
+  async buildingsByKeys(keys, { deadlineMs = 0 } = {}) {
     const out = new Map();
     const missing = [];
     for (const key of new Set(keys)) {
+      if (!isOsmKey(key)) continue;
       if (this.byKey.has(key)) out.set(key, this.byKey.get(key));
       else missing.push(key);
     }
@@ -302,7 +331,7 @@ export class OsmClient {
       const parts = [];
       if (ways.length) parts.push(`way(id:${ways.join(',')});`);
       if (rels.length) parts.push(`relation(id:${rels.join(',')});`);
-      const json = await this.query(`[out:json][timeout:25];(${parts.join('')});out tags geom;`);
+      const json = await this.query(`[out:json][timeout:25];(${parts.join('')});out tags geom;`, { deadlineMs });
       for (const el of json.elements || []) {
         const building = toBuilding(el);
         if (building) out.set(building.key, this.remember(building));

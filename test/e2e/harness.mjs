@@ -148,6 +148,47 @@ function signInPlace(wire, keypair) {
   throw new Error('This wallet is not a signer of the transaction.');
 }
 
+function encodePng(size, pixel) {
+  const raw = Buffer.alloc((size * 3 + 1) * size);
+  for (let row = 0; row < size; row++) {
+    raw[row * (size * 3 + 1)] = 0;
+    for (let col = 0; col < size; col++) {
+      const [r, g, b] = pixel(col, row);
+      const o = row * (size * 3 + 1) + 1 + col * 3;
+      raw[o] = r;
+      raw[o + 1] = g;
+      raw[o + 2] = b;
+    }
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(td) >>> 0);
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+// A stand-in "photo" of a stone facade (sky on top), by day or by night.
+function facadePhotoPng(night) {
+  return encodePng(320, (x, y) => {
+    if (y < 40) return night ? [10, 14, 30] : [150, 190, 230];
+    const wx = x % 26;
+    const wy = (y - 40) % 30;
+    const win = wx > 7 && wx < 19 && wy > 6 && wy < 22;
+    const lit = night && ((Math.floor(x / 26) * 7 + Math.floor((y - 40) / 30) * 13) % 5 < 2);
+    if (win) return lit ? [255, 214, 150] : night ? [20, 26, 40] : [70, 92, 112];
+    return night ? [48, 42, 38] : [196, 178, 150];
+  });
+}
+
 // A small, dim "satellite" tile: textured ground with a tile-dependent tint.
 const pngCache = new Map();
 function groundPng(z, y, x) {
@@ -207,8 +248,11 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
   page.on('console', (m) => log.console.push(`${m.type()}: ${m.text()}`));
   page.on('pageerror', (e) => log.errors.push(e.message));
 
-  const state = { keypair: nacl.sign.keyPair(), rejectNext: false };
+  const state = { keypair: nacl.sign.keyPair(), rejectNext: false, overpassDown: false };
   const harness = {
+    setOverpassDown(down) {
+      state.overpassDown = down;
+    },
     setKeypair(kp) {
       state.keypair = kp;
     },
@@ -274,6 +318,7 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
       return json(route, chain.handle(JSON.parse(req.postData() || '{}')));
     }
     if (/overpass/.test(host) || host === 'maps.mail.ru') {
+      if (state.overpassDown) return route.fulfill({ status: 504, body: 'Gateway Timeout' });
       const body = new URLSearchParams(req.postData() || '');
       return json(route, services.overpass(body.get('data') || url.searchParams.get('data') || ''));
     }
@@ -283,7 +328,15 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
     }
     if (host === 'www.wikidata.org') return json(route, services.wikidata(url.searchParams.get('entity'), url.searchParams.get('property') || 'P18'));
     if (host.endsWith('wikipedia.org')) return json(route, { batchcomplete: '', query: { pages: {} } });
-    if (host === 'commons.wikimedia.org' && url.pathname === '/w/api.php') return json(route, { batchcomplete: '', query: { pages: {} } });
+    if (host === 'commons.wikimedia.org' && url.pathname === '/w/api.php') {
+      const title = url.searchParams.get('titles');
+      if (!title) return json(route, { batchcomplete: '', query: { pages: {} } });
+      const name = title.replace(/^File:/, '').replace(/ /g, '_');
+      return json(route, { query: { pages: { 1: { title, imageinfo: [{ thumburl: `https://upload.wikimedia.org/harness/${encodeURIComponent(name)}.png`, url: '' }] } } } });
+    }
+    if (host === 'upload.wikimedia.org') {
+      return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: facadePhotoPng(/night/i.test(decodeURIComponent(url.pathname))) });
+    }
     if (host === 'api.dexscreener.com') return json(route, { pairs: [] });
     if (host === 'commons.wikimedia.org') {
       const name = url.pathname.split('/').pop();

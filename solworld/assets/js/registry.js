@@ -29,7 +29,9 @@ import {
   sha256,
 } from './solana.js';
 
-const KEY = '[wr][1-9]\\d{0,15}';
+// w/r = OpenStreetMap way/relation; g = a building identified by its map
+// footprint location (used when OpenStreetMap lookups are unavailable).
+const KEY = '[wrg][1-9]\\d{0,15}';
 const ADDR = '[1-9A-HJ-NP-Za-km-z]{32,44}';
 const SIG = '[1-9A-HJ-NP-Za-km-z]{64,90}';
 const COORD = '(-?\\d{1,2}(?:\\.\\d{1,8})?),(-?\\d{1,3}(?:\\.\\d{1,8})?)';

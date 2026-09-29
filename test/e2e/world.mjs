@@ -234,6 +234,17 @@ export function worldLayers(world) {
       ...cities.map(([name, lng, lat, rank]) => ({ type: 'Feature', properties: { class: 'city', name, name_en: name, rank, capital: 0 }, geometry: { type: 'Point', coordinates: [lng, lat] } })),
       ...countriesPts.map(([name, lng, lat, rank]) => ({ type: 'Feature', properties: { class: 'country', name, name_en: name, rank }, geometry: { type: 'Point', coordinates: [lng, lat] } })),
     ]),
+    poi: fc(
+      world.buildings
+        .filter((b, i) => i % 7 === 3 && !b.tags.name)
+        .slice(0, 160)
+        .map((b, i) => {
+          const signs = [['bar', 'Neon Tiger'], ['restaurant', 'Joe’s Pizza'], ['cinema', 'Regal'], ['lodging', 'Hotel Aria'], ['cafe', 'Blue Cup'], ['shop', 'Hudson News'], ['nightclub', 'Club 44'], ['pharmacy', 'Duane Reade'], ['fast_food', 'Halal Cart'], ['theatre', 'Majestic']];
+          const [cls, name] = signs[i % signs.length];
+          const [x, y] = b.ring[0];
+          return { type: 'Feature', properties: { class: cls, subclass: cls, name, name_en: name, rank: 1 + (i % 20) }, geometry: { type: 'Point', coordinates: [x, y] } };
+        }),
+    ),
     building: fc(
       world.buildings.map((b) => {
         const h = parseFloat(b.tags.height);

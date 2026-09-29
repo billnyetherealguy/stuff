@@ -80,10 +80,16 @@ function cityLabel(id, rankFilter, minzoom) {
 }
 
 export const NEON = ['#22e6ff', '#ff3df2', '#8f6bff', '#2af5a8', '#ffb547'];
-// About one building in four gets neon trim, in a color picked from its height.
-const HEIGHT_N = ['floor', ['coalesce', ['get', 'render_height'], 5]];
-const NEON_PICK = ['==', ['%', HEIGHT_N, 4], 1];
-const NEON_COLOR = ['match', ['%', HEIGHT_N, 5], 0, NEON[0], 1, NEON[1], 2, NEON[2], 3, NEON[3], NEON[4]];
+// Places that really have lit signs (OpenStreetMap points of interest), and
+// the neon color their sign glows in.
+const SIGN_CLASSES = {
+  bar: NEON[1], beer: NEON[1], nightclub: NEON[1], music: NEON[1],
+  restaurant: '#ff5a4f', fast_food: '#ff5a4f', cafe: NEON[4], ice_cream: '#ff8ad8', bakery: NEON[4],
+  cinema: '#ffd166', theatre: '#ffd166', casino: '#ffd166', lodging: NEON[0],
+  shop: NEON[2], clothing_store: NEON[2], alcohol_shop: NEON[1], jewelry: '#ffd166', mobile_phone: NEON[0],
+  grocery: NEON[3], pharmacy: NEON[3], convenience: NEON[3], fuel: NEON[0], hairdresser: '#ff8ad8',
+};
+const SIGN_COLOR = ['match', ['get', 'class'], ...Object.entries(SIGN_CLASSES).flat(), NEON[2]];
 
 export const CLOSE_UP_ZOOM = 16; // buildings switch to lit, windowed facades here
 
@@ -306,22 +312,6 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
         },
       },
 
-      {
-        // Neon light along the big streets (brightest at night; see map.js daylight).
-        id: 'road-neon',
-        type: 'line',
-        source: 'omt',
-        'source-layer': 'transportation',
-        minzoom: 12.5,
-        filter: ['all', isLine, notTunnelOrBridge, classIn('motorway', 'trunk', 'primary', 'secondary')],
-        layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: {
-          'line-color': ['match', ['get', 'class'], 'motorway', NEON[1], 'trunk', NEON[0], 'primary', NEON[0], NEON[2]],
-          'line-width': width(12.5, 3, 16, 14, 19, 46),
-          'line-blur': width(12.5, 3, 16, 10, 19, 30),
-          'line-opacity': 0.32,
-        },
-      },
 
       {
         id: 'building-2d',
@@ -344,34 +334,6 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
         'source-layer': 'building',
         minzoom: 13,
         paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
-      },
-      {
-        // Neon trim glowing at the base of some buildings (underneath the 3D shapes).
-        id: 'building-neon-glow',
-        type: 'line',
-        source: 'omt',
-        'source-layer': 'building',
-        minzoom: 15,
-        filter: NEON_PICK,
-        paint: {
-          'line-color': NEON_COLOR,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 15, 3, 18, 16],
-          'line-blur': ['interpolate', ['linear'], ['zoom'], 15, 3, 18, 12],
-          'line-opacity': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.6],
-        },
-      },
-      {
-        id: 'building-neon',
-        type: 'line',
-        source: 'omt',
-        'source-layer': 'building',
-        minzoom: 15,
-        filter: NEON_PICK,
-        paint: {
-          'line-color': NEON_COLOR,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 15, 0.6, 18, 2.2],
-          'line-opacity': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.95],
-        },
       },
       {
         id: 'building-3d',
@@ -423,6 +385,32 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
         },
       },
 
+      {
+        // Neon signs: shops, bars, restaurants, cinemas, hotels… glow where they
+        // really are. Brightness follows the real sun (map.js daylight).
+        id: 'poi-neon',
+        type: 'symbol',
+        source: 'omt',
+        'source-layer': 'poi',
+        minzoom: 15.4,
+        filter: ['all', ['has', 'name'], ['match', ['get', 'class'], Object.keys(SIGN_CLASSES), true, false]],
+        layout: {
+          'text-field': NAME,
+          'text-font': BOLD,
+          'text-size': ['interpolate', ['linear'], ['zoom'], 15.4, 10, 18, 15],
+          'text-max-width': 8,
+          'text-letter-spacing': 0.05,
+          'text-padding': 3,
+          'symbol-sort-key': ['coalesce', ['get', 'rank'], 99],
+        },
+        paint: {
+          'text-color': '#fff8f0', // white-hot tube, colored glow around it
+          'text-halo-color': SIGN_COLOR,
+          'text-halo-width': 2.2,
+          'text-halo-blur': 2.4,
+          'text-opacity': ['interpolate', ['linear'], ['zoom'], 15.4, 0, 16, 1],
+        },
+      },
       {
         id: 'label-water',
         type: 'symbol',

@@ -90,6 +90,7 @@ export class MapController extends Emitter {
     // Facade patterns are drawn on demand, the first time a tile needs one.
     this.map.setMissingStyleImageResolver(async (id) => {
       if (FACADE_IDS.includes(id) && !this.map.hasImage(id)) this.map.addImage(id, facadeImage(id, this.phase || 'night'), { pixelRatio: 4 });
+      else if (id === 'sw-skin' && this.skin && !this.map.hasImage(id)) this.map.addImage(id, this.skin.image, { pixelRatio: 1 });
     });
     this.map.on('load', () => this._onLoad());
     this.map.once('idle', () => this.emit('first-idle'));
@@ -137,7 +138,28 @@ export class MapController extends Emitter {
     shell('sw-shell-hover', ['==', ['get', 'kind'], 'hover'], 0.75);
     // Up close the tint turns translucent so the owned building's facade shows through.
     shell('sw-shell-owned', ['match', ['get', 'kind'], ['mine', 'owned'], true, false], ['interpolate', ['linear'], ['zoom'], 15.8, 0.9, 16.6, 0.5]);
-    shell('sw-shell-selected', ['==', ['get', 'kind'], 'selected'], 0.97);
+    shell('sw-shell-selected', ['all', ['==', ['get', 'kind'], 'selected'], ['!', ['get', 'skin']]], 0.97);
+    // The selected building wearing its real photo (see setSkin).
+    m.addLayer(
+      {
+        id: 'sw-shell-skin',
+        type: 'fill-extrusion',
+        source: 'sw-shells',
+        minzoom: BUILDING_MIN_ZOOM,
+        filter: ['all', ['==', ['get', 'kind'], 'selected'], ['get', 'skin']],
+        paint: {
+          'fill-extrusion-pattern': 'sw-skin',
+          'fill-extrusion-height': ['get', 'top'],
+          'fill-extrusion-base': ['get', 'base'],
+          'fill-extrusion-opacity': 1,
+          'fill-extrusion-vertical-gradient': true,
+        },
+      },
+      labelsFrom,
+    );
+    m.on('zoomend', () => {
+      if (this.skin && Math.floor(m.getZoom()) !== this.skin.zoom) this._applySkin();
+    });
 
     m.addLayer(
       {
@@ -263,10 +285,9 @@ export class MapController extends Emitter {
     paint('satellite', 'raster-brightness-max', sat[0]);
     paint('satellite', 'raster-saturation', sat[1]);
     paint('satellite', 'raster-opacity', ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, sat[2]]);
-    const neon = { day: 0.12, dusk: 0.6, night: 1 }[phase];
-    paint('road-neon', 'line-opacity', 0.32 * neon);
-    paint('building-neon-glow', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.6 * neon]);
-    paint('building-neon', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.95 * neon]);
+    // Signs are switched off in daylight, glow at dusk and full at night.
+    const neon = { day: 0, dusk: 0.8, night: 1 }[phase];
+    paint('poi-neon', 'text-opacity', ['interpolate', ['linear'], ['zoom'], 15.4, 0, 16, neon]);
     const blocks = { day: ['#4d525b', '#5d626c', '#6f7580'], dusk: ['#2a2527', '#342d2f', '#40383a'], night: ['#16181d', '#1c1f25', '#232730'] }[phase];
     paint('building-3d', 'fill-extrusion-color', ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 5], 0, blocks[0], 80, blocks[1], 250, blocks[2]]);
     const sky = {
@@ -512,7 +533,13 @@ export class MapController extends Emitter {
     return {
       type: 'Feature',
       geometry: { type: 'Polygon', coordinates: inflatePolygon(part, kind === 'hover' ? 0.25 : 0.45) },
-      properties: { kind, tone: tone || '', top: top + lift, base: Math.max(0, base - (base > 0 ? 0.3 : 0)) },
+      properties: {
+        kind,
+        tone: tone || '',
+        top: top + lift,
+        base: Math.max(0, base - (base > 0 ? 0.3 : 0)),
+        skin: kind === 'selected' && !!this.skin?.ready && this.skin.key === this.selection?.key,
+      },
     };
   }
 
@@ -535,13 +562,42 @@ export class MapController extends Emitter {
    * `fallback` is the tile footprint that was clicked (used until then).
    */
   setSelection(selection) {
+    if (this.skin && this.skin.key !== selection?.key) this.skin = null;
     this.selection = selection;
     this.refreshShells();
   }
 
   clearSelection() {
     this.selection = null;
+    this.skin = null;
     this.refreshShells();
+  }
+
+  /**
+   * Wraps the selected building in a texture made from its real photo
+   * (skin.js). `height` (m) sizes the photo so one copy spans the building.
+   */
+  setSkin({ key, image, height }) {
+    if (!this.ready || this.selection?.key !== key) return;
+    this.skin = { key, image, height: Math.max(6, height || 10), ready: false };
+    this._applySkin();
+  }
+
+  _applySkin() {
+    const m = this.map;
+    const skin = this.skin;
+    if (!skin) return;
+    // Patterns draw at a fixed screen size per zoom level: pick the pixel ratio
+    // that makes one copy of the photo about as tall as the building.
+    const zoom = Math.floor(m.getZoom());
+    const lat = this.selection?.anchor?.[1] ?? this.center[1];
+    const metersPerPx = (40_075_016.686 * Math.cos((lat * Math.PI) / 180)) / (512 * 2 ** zoom);
+    const pixelRatio = Math.min(24, Math.max(0.2, (skin.image.height * metersPerPx) / skin.height));
+    if (m.hasImage('sw-skin')) m.removeImage('sw-skin');
+    m.addImage('sw-skin', skin.image, { pixelRatio });
+    skin.zoom = zoom;
+    skin.ready = true;
+    this._renderShells();
   }
 
   /* ----------------------------------------------------------- camera */

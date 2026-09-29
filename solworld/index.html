@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Solworld — Own every building on Earth</title>
+  <meta name="description" content="Solworld is a live map of every building on Earth. Tap any building, see who owns it, and make it yours with SOL. Hold more than 0.2 SOL and your first building is free.">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-512.png">
+  <link rel="manifest" href="manifest.webmanifest">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Solworld">
+  <meta property="og:title" content="Solworld — Own every building on Earth">
+  <meta property="og:description" content="Tap any building in the world, see who owns it, and make it yours with SOL.">
+  <meta property="og:image" content="og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Solworld — Own every building on Earth">
+  <meta name="twitter:image" content="og.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400..600&display=swap">
+  <link rel="modulepreload" href="vendor/maplibre-6.11.2/maplibre-gl.mjs">
+  <link rel="stylesheet" href="vendor/maplibre-6.11.2/maplibre-gl.css">
+  <link rel="stylesheet" href="assets/css/solworld.css">
+</head>
+<body>
+  <div id="app" class="app is-booting">
+    <div class="space" aria-hidden="true"></div>
+    <div id="map" class="map" role="application" aria-label="3D map of every building on Earth"></div>
+    <div class="vignette" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Solworld — back to the globe">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="26" height="26">
+            <defs><linearGradient id="bm" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9b7bff"/><stop offset="1" stop-color="#2af5a8"/></linearGradient></defs>
+            <circle cx="16" cy="16" r="12.5" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="1.2"/>
+            <ellipse cx="16" cy="16" rx="5.4" ry="12.5" fill="none" stroke="rgba(255,255,255,.22)" stroke-width="1.2"/>
+            <path d="M3.8 12.2h24.4M3.8 19.8h24.4" stroke="rgba(255,255,255,.16)" stroke-width="1.2"/>
+            <path d="M16 3.5a12.5 12.5 0 0 1 12.5 12.5" fill="none" stroke="url(#bm)" stroke-width="2.4" stroke-linecap="round"/>
+            <circle cx="22.6" cy="9.4" r="2.1" fill="#2af5a8"/>
+          </svg>
+        </span>
+        <span class="brand-word">SOLWORLD</span>
+      </a>
+      <span id="net-pill" class="net-pill"></span>
+      <div id="search" class="search"></div>
+      <div class="top-actions">
+        <button id="btn-help" class="icon-btn" aria-label="How Solworld works" title="How it works"></button>
+        <div id="wallet-slot" class="wallet-slot"></div>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status"></div>
+
+    <aside id="rail" class="rail glass" aria-label="Leaderboard and activity"></aside>
+    <aside id="panel" class="panel glass" hidden aria-live="polite"></aside>
+
+    <div id="stats" class="stats glass" aria-label="Solworld totals"></div>
+    <div id="controls" class="controls" aria-label="Map controls"></div>
+    <div id="hint" class="hint"><span></span></div>
+
+    <section id="hero" class="hero" aria-label="Welcome"></section>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+    <div id="modal-root"></div>
+
+    <div id="loader" class="loader" aria-hidden="true">
+      <div class="loader-word">
+        <span>S</span><span>O</span><span>L</span><span>W</span><span>O</span><span>R</span><span>L</span><span>D</span>
+      </div>
+      <div class="loader-bar"><i></i></div>
+      <div class="loader-caption">Loading the world</div>
+    </div>
+  </div>
+
+  <noscript>
+    <div class="noscript">Solworld needs JavaScript to draw the map.</div>
+  </noscript>
+
+  <script src="config.js"></script>
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>

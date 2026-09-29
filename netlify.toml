@@ -1,0 +1,5 @@
+# Netlify: "Add new site → Import from Git" picks this up automatically.
+# Solworld is a static site, so there is nothing to build.
+[build]
+  publish = "solworld"
+  command = ""

@@ -306,7 +306,7 @@ async function boot() {
     // Keep the flat map (hidden underneath) on the same spot: it supplies
     // roads, shop signs and building footprints for the 3D view.
     mapc.map.jumpTo({ center: cam.center, zoom: Math.min(19, cam.zoom), pitch: Math.min(60, cam.pitch), bearing: cam.bearing });
-    mapc.map.once('idle', () => {
+    mapc.settled().then(() => {
       refresh3DOverlays();
       refreshTraffic();
     });
@@ -364,7 +364,8 @@ async function boot() {
     // Roads may not be loaded yet: only remember this spot once there was something to drive on.
     trafficAt = traffic.lanes.car.length || traffic.lanes.foot.length ? { center, night } : null;
   }
-  mapc.map.on('idle', debounce(() => !r3d.active && refreshTraffic(), 300));
+  // Refresh the street network after moving, once the new tiles are in.
+  mapc.map.on('moveend', () => mapc.settled().then(() => !r3d.active && refreshTraffic()));
   let lastFrame = 0;
   function animateTraffic(t) {
     requestAnimationFrame(animateTraffic);
@@ -535,7 +536,7 @@ async function boot() {
   async function tileBuildingNear(lngLat) {
     mapc.stopOrbit();
     mapc.map.jumpTo({ center: lngLat, zoom: Math.max(mapc.zoom, 17), pitch: 0 });
-    await new Promise((r) => mapc.map.once('idle', r));
+    await mapc.settled();
     // Address points often sit a few meters off the building: search outward a little.
     const at = mapc.map.project(lngLat);
     for (const radius of [0, 10, 22, 36]) {

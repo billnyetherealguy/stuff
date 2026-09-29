@@ -461,6 +461,22 @@ export class MapController extends Emitter {
 
   /* -------------------------------------------------------- ownership */
 
+  /**
+   * Resolves once the camera is still and the visible tiles have loaded.
+   * (MapLibre's 'idle' never fires while the street-life animation runs.)
+   */
+  settled(maxMs = 8000) {
+    const m = this.map;
+    return new Promise((resolve) => {
+      const t0 = performance.now();
+      const check = () => {
+        if ((!m.isMoving() && m.areTilesLoaded() && m.isStyleLoaded()) || performance.now() - t0 > maxMs) resolve();
+        else setTimeout(check, 60);
+      };
+      setTimeout(check, 30);
+    });
+  }
+
   /** Draws the street-life agents (see traffic.js). */
   setAgents(agents) {
     if (!this.ready) return;

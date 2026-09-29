@@ -39,7 +39,7 @@ async function ready(page, origin, hash = '') {
 /** Screen point of a lng/lat, after the camera settles. */
 async function settle(page) {
   await page.waitForFunction(() => !window.solworld.map.map.isMoving(), null, { timeout: 20_000 });
-  await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+  await page.evaluate(() => window.solworld.map.settled());
 }
 
 async function stopMotion(page) {
@@ -64,7 +64,7 @@ async function clickBuildingAt(page, lngLat, { keepCamera = false, timeout = 15_
       mc.stopOrbit();
       mc.map.jumpTo({ center: [lng, lat], zoom: 16.4, pitch: 0 });
     }, lngLat);
-    await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+    await page.evaluate(() => window.solworld.map.settled());
   }
   const p = await project(page, lngLat);
   await page.mouse.click(p.x, p.y);
@@ -214,7 +214,7 @@ async function demo(env) {
       assert.deepEqual(await page.evaluate((k) => window.solworld.registry.state.buildings.get(k).sign.color, key), 3);
       await closePanel(page);
       await page.evaluate(() => window.solworld.map.map.easeTo({ zoom: 15.2, pitch: 45, duration: 0 }));
-      await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+      await page.evaluate(() => window.solworld.map.settled());
       const signs = await page.evaluate(() => window.solworld.map.map.queryRenderedFeatures({ layers: ['sw-signs'] }).map((f) => f.properties.sign));
       assert.ok(signs.includes('gm from Solworld'), `rendered signs: ${signs}`);
       await shot(page, '08-billboard-map');
@@ -271,7 +271,7 @@ async function demo(env) {
     await step('demo: close up, buildings get lit facades over satellite ground', async () => {
       await closePanel(page);
       await page.evaluate(([lng, lat]) => window.solworld.map.map.jumpTo({ center: [lng, lat], zoom: 17.2, pitch: 62, bearing: 30 }), EMPIRE);
-      await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+      await page.evaluate(() => window.solworld.map.settled());
       await page.waitForTimeout(800);
       const ok = await page.evaluate(() => {
         const m = window.solworld.map.map;
@@ -366,7 +366,7 @@ async function demo(env) {
       harness.setOverpassDown(true);
       await closePanel(page);
       await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9931, 40.7392], zoom: 16.4, pitch: 0 }));
-      await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+      await page.evaluate(() => window.solworld.map.settled());
       await openAvailable(page, [[0.0011, 0.0004], [-0.0012, -0.0006], [0.0016, -0.0009], [-0.002, 0.0012], [0.0005, 0.0019]]);
       const key = await page.evaluate(() => location.hash.split('/').pop());
       assert.match(key, /^[wrg]\d+$/);
@@ -581,7 +581,7 @@ async function real3d(env) {
   const config = { realistic3d: { googleKey: 'AIzaHarnessKey000000000000000000000000' } };
   const { page, log, browser } = await launch({ ...env, config });
   activePage = page;
-  const idle = () => page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+  const idle = () => page.evaluate(() => window.solworld.map.settled());
   try {
     await step('real3d: street life — cars and people move through Midtown', async () => {
       await ready(page, env.origin);

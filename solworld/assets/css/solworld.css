@@ -3824,3 +3824,65 @@ textarea.field-input {
     animation: none;
   }
 }
+
+/* ==========================================================================
+   v4 — realistic 3D (Cesium + Google Photorealistic 3D Tiles)
+   ========================================================================== */
+
+.map3d {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.9s var(--ease);
+  background: #000;
+}
+.map3d.is-active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.map3d .cesium-widget,
+.map3d .cesium-viewer,
+.map3d .cesium-viewer-cesiumWidgetContainer {
+  width: 100%;
+  height: 100%;
+}
+.map3d .cesium-widget canvas {
+  outline: none;
+}
+/* Keep the provider's logo and credits visible, tucked above our bottom bar. */
+.map3d .cesium-widget-credits {
+  bottom: 6px !important;
+  left: auto !important;
+  right: 72px;
+  font-size: 10px;
+  opacity: 0.85;
+}
+.ctrl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 13px;
+  border: 1px solid var(--line-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s, opacity 0.3s;
+}
+.ctrl-pill.is-active {
+  background: var(--ink);
+  color: #000;
+}
+.ctrl-pill.is-hidden {
+  display: none;
+}
+.ctrl-pill {
+  align-self: flex-end;
+}
+body.is-3d .controls .ctrl-group,
+body.is-3d #hint {
+  display: none;
+}

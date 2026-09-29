@@ -43,7 +43,20 @@ After that, holders tap **Buy with my $TICKER holdings** on any building (or **W
 
 The `memecoin` block in `config.js` still works as an alternative, but the on-site setting is easier.
 
-### 3. Deploy (pick one)
+### 3. Turn on realistic 3D (real buildings, real textures)
+
+Up close, Solworld switches to **Google's Photorealistic 3D Tiles**: the same real 3D city models as Google Earth, with real photo textures on every wall and roof. It's drawn with CesiumJS, which loads only when someone zooms in. It needs a Google key:
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com), create a project, and add a billing account. Google gives a free monthly allowance; check their current Map Tiles API pricing.
+2. **APIs & Services → Library**, search **Map Tiles API**, and click **Enable**.
+3. **APIs & Services → Credentials → Create credentials → API key**. Under **Application restrictions**, choose **Websites** and add your site (e.g. `https://yoursite.netlify.app/*`). Under **API restrictions**, allow only the Map Tiles API.
+4. On your site, open **`/#/operator`**, paste the key under **Realistic 3D**, tap **Save key**, and approve with your treasury wallet. (Or put it in `config.js` → `realistic3d.googleKey`.)
+
+After that, zooming into any city switches to real 3D, and zooming out goes back to the map. People can also tap **Realistic 3D / Map view** in the corner. At night (following the real sun there), the real textures are darkened and a see-through glow is added only where the windows are in the photo textures, as if some rooms had their lights on.
+
+> Google requires its attribution to stay visible (it's shown automatically in the 3D view). Its terms also say how its 3D tiles may be used, for example not together with a non-Google geocoder. Read the Map Tiles API policies before launch.
+
+### 4. Deploy (pick one)
 
 **Netlify (recommended):** at [app.netlify.com](https://app.netlify.com), go to **Add new site → Import an existing project → GitHub**, pick this repository and branch, then click **Deploy**. [`netlify.toml`](netlify.toml) already publishes the `solworld` folder.
 
@@ -53,7 +66,7 @@ The `memecoin` block in `config.js` still works as an alternative, but the on-si
 
 **Anywhere else:** upload the contents of `solworld/` to any static host that serves over HTTPS.
 
-### 4. Before real traffic (recommended)
+### 5. Before real traffic (recommended)
 
 The free public Solana RPC is rate-limited. Add your own endpoint in `config.js`; a free [Helius](https://helius.dev) key is plenty to start:
 
@@ -125,6 +138,7 @@ It also shows totals: revenue, volume, buildings, owners and sales.
 - **The real sun:** lighting follows the sun's actual position at the place you're looking at, right now. By day, the light comes from where the sun is, glass reflects the sky and the satellite ground is bright. At golden hour everything turns warm. At night, walls go dark, some windows light up with a soft glow, and neon signs glow where real ones are: bars, restaurants, shops, cinemas, theatres and hotels from OpenStreetMap, each in its own color.
 - **Photos match the time of day:** after dark, a building shows a night photo when one exists (Wikidata "nighttime view" or Wikimedia Commons), with a soft bloom so the lit windows glow. The satellite close-up is graded to night with glowing windows. A chip shows whether it's day, golden hour or night there now.
 - **Real photos on the buildings:** when you open a building that has a real photo, the 3D building is wrapped in that photo. After dark, the lit windows glow: night photos get a soft bloom, and day photos are darkened with warm window lights added.
+- **Street life:** simulated cars drive the real roads and people walk the sidewalks and footpaths, both on the map and in realistic 3D. How many depends on how busy the place is in real life: packed in Midtown Manhattan or downtown DC, a handful in suburbs and towns, none in the countryside. Fewer people are out at night, and cars show headlights and taillights after dark.
 - **Every building loads:** building lookups ask several OpenStreetMap servers at once and take the first answer, and buildings around where you're looking load in the background. If the servers are down or slow, the building still opens straight from the map and stays buyable, identified by its footprint (`g…` keys). Searching a street address opens the house at that address.
 - **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org), identified by its OSM element (`w…`/`r…`). Clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test.
 - **What it looks like:** a satellite close-up with the footprint traced, a real photo from Wikidata/Wikimedia Commons when there is one, and a Google Street View link.
@@ -134,7 +148,7 @@ It also shows totals: revenue, volume, buildings, owners and sales.
 
 ## Good to know
 
-- **Photoreal 3D:** the close-up view is stylized (lit windows over satellite ground). Fully photoreal 3D cities need Google's Photorealistic 3D Tiles, which require a paid API key and a different renderer.
+- **Without a Google key,** close-ups use the built-in textured buildings over satellite ground. With a key, they switch to real photogrammetry. The 3D view needs a reasonably modern phone or computer; if it can't load, the site stays on the map.
 - **Browser wallets are hot wallets:** they're convenient for small amounts. The site tells visitors to back up the key and to withdraw anything large.
 - **Shared public services:** OpenFreeMap, Overpass, Photon and Esri imagery are free with fair-use limits. That's fine for a launch; for heavy traffic, consider paid tiers. For commercial use of the imagery, check Esri's terms or set `map.satellite` to another provider.
 - **Scale:** each visitor rebuilds ownership from the chain and caches it, which is quick for thousands of actions. At tens of thousands, add an indexer that publishes snapshots.
@@ -158,6 +172,9 @@ solworld/                 the website (deploy this folder)
   assets/js/map.js        globe, 3D buildings, billboards, picking, camera
   assets/js/mapstyle.js   the dark map style (+ close-up satellite and facades)
   assets/js/facade.js     procedural lit-window textures
+  assets/js/realistic3d.js  real 3D view (CesiumJS + Google 3D Tiles), night window-glow shader
+  assets/js/traffic.js    simulated cars and people, density by how busy the place is
+  assets/js/sun.js        real sun position (lighting, day/night)
   assets/js/ui/           panel, wallet, leaderboard, search, modals
   vendor/                 MapLibre GL JS 6.11.2, @noble/ed25519 3.2.0, uqr 0.1.3
 test/                     development only (not deployed)

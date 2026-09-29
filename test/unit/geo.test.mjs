@@ -66,3 +66,16 @@ test('overpass geometry: rings assemble and heights follow OpenMapTiles rules', 
   assert.equal(buildingHeights({}).top, 5);
   assert.equal(Math.round(buildingHeights({ height: "100'" }).top), 31);
 });
+
+test('street life: packed in big cities, a few in towns, none in the middle of nowhere', async () => {
+  const { streetLife } = await import('../../solworld/assets/js/traffic.js');
+  const nyc = streetLife(-73.9857, 40.7484);
+  const dc = streetLife(-77.0365, 38.8977);
+  const suburb = streetLife(-77.4312, 38.8012);
+  const nowhere = streetLife(-100.5, 45.2);
+  assert.ok(nyc.cars >= 100 && nyc.people >= 150, JSON.stringify(nyc));
+  assert.ok(dc.cars > 20 && dc.people > 30, JSON.stringify(dc));
+  assert.ok(suburb.cars < dc.cars / 3, JSON.stringify(suburb));
+  assert.deepEqual([nowhere.cars, nowhere.people], [0, 0]);
+  assert.ok(streetLife(-73.9857, 40.7484, { night: true }).people < nyc.people);
+});

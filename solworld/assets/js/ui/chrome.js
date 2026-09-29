@@ -343,6 +343,17 @@ export function openOperator(ctx) {
     ),
   );
 
+  // Google Map Tiles API key for the realistic 3D close-ups.
+  const keyIn = h('input', { class: 'field-input', placeholder: 'Google Maps API key (starts with AIza…)', spellcheck: 'false', autocomplete: 'off' });
+  const keyForm = h(
+    'div',
+    { class: 'form op-coin' },
+    ctx.key3dActive() ? h('div', { class: 'holder-preview' }, h('b', null, 'Realistic 3D is on'), ' · zoom into any city to see it') : h('p', { class: 'op-empty' }, 'Off. Add a Google key to show real 3D buildings with real photo textures when people zoom in.'),
+    keyIn,
+    h('p', { class: 'modal-fine' }, 'In Google Cloud: create a project, enable the “Map Tiles API”, create an API key, and restrict it to your site’s address (HTTP referrers). The key becomes public, so the restriction matters.'),
+    h('div', { class: 'field-row' }, h('button', { class: 'btn btn--primary btn--sm', onclick: (e) => keyIn.value.trim() && ctx.onSetKey3d(keyIn.value.trim(), e.currentTarget) }, 'Save key')),
+  );
+
   openModal({
     eyebrow: settings.live ? 'Live' : 'Demo',
     title: 'Operator tools',
@@ -369,6 +380,8 @@ export function openOperator(ctx) {
             h('p', { class: 'modal-fine' }, 'Refunds, revokes and billboard removals are signed by your treasury wallet (Phantom asks you to approve each one).', connected() ? '' : ' You’ll be asked to connect it.'),
           )
         : null,
+      h('h3', { class: 'op-h' }, 'Realistic 3D (Google 3D Tiles)'),
+      keyForm,
       h('h3', { class: 'op-h' }, 'Your meme coin'),
       coinForm,
       h('h3', { class: 'op-h' }, `Refunds owed (${owed.length})`),

@@ -6,6 +6,7 @@ import { Emitter } from './emitter.js';
 import { buildStyle } from './mapstyle.js';
 import { FACADE_IDS, facadeImage } from './facade.js';
 import { sunPosition } from './sun.js';
+import { agentFootprint } from './traffic.js';
 import { SIGN_COLORS } from './registry.js';
 import {
   inflatePolygon,
@@ -209,6 +210,45 @@ export class MapController extends Emitter {
         'circle-pitch-alignment': 'map',
       },
     });
+    // Street life (traffic.js): cars and people as small 3D shapes, headlights after dark.
+    m.addSource('sw-agents', { type: 'geojson', data: EMPTY });
+    m.addSource('sw-lights', { type: 'geojson', data: EMPTY });
+    for (const [id, kind] of [['sw-cars', 'car'], ['sw-people', 'person']]) {
+      m.addLayer(
+        {
+          id,
+          type: 'fill-extrusion',
+          source: 'sw-agents',
+          minzoom: 15,
+          filter: ['==', ['get', 'kind'], kind],
+          paint: {
+            'fill-extrusion-color': ['get', 'color'],
+            'fill-extrusion-height': ['get', 'height'],
+            'fill-extrusion-base': 0.12,
+            'fill-extrusion-opacity': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.6, 1],
+            'fill-extrusion-vertical-gradient': true,
+          },
+        },
+        labelsFrom,
+      );
+    }
+    m.addLayer(
+      {
+        id: 'sw-headlights',
+        type: 'circle',
+        source: 'sw-lights',
+        minzoom: 15,
+        paint: {
+          'circle-color': ['get', 'color'],
+          'circle-radius': ['interpolate', ['exponential', 2], ['zoom'], 15, 1.2, 19, 14],
+          'circle-blur': 1,
+          'circle-opacity': 0,
+          'circle-pitch-alignment': 'map',
+        },
+      },
+      labelsFrom,
+    );
+
     // Owners' billboards: glowing text above their building for everyone to see.
     m.addLayer({
       id: 'sw-signs',
@@ -286,6 +326,7 @@ export class MapController extends Emitter {
     paint('satellite', 'raster-saturation', sat[1]);
     paint('satellite', 'raster-opacity', ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, sat[2]]);
     // Signs are switched off in daylight, glow at dusk and full at night.
+    paint('sw-headlights', 'circle-opacity', { day: 0, dusk: 0.6, night: 0.9 }[phase]);
     const neon = { day: 0, dusk: 0.8, night: 1 }[phase];
     paint('poi-neon', 'text-opacity', ['interpolate', ['linear'], ['zoom'], 15.4, 0, 16, neon]);
     const blocks = { day: ['#4d525b', '#5d626c', '#6f7580'], dusk: ['#2a2527', '#342d2f', '#40383a'], night: ['#16181d', '#1c1f25', '#232730'] }[phase];
@@ -419,6 +460,45 @@ export class MapController extends Emitter {
   }
 
   /* -------------------------------------------------------- ownership */
+
+  /** Draws the street-life agents (see traffic.js). */
+  setAgents(agents) {
+    if (!this.ready) return;
+    const night = this.phase && this.phase !== 'day';
+    const features = [];
+    const lights = [];
+    for (const a of agents) {
+      features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [agentFootprint(a)] }, properties: { kind: a.kind, color: a.color, height: a.height } });
+      if (night && a.kind === 'car') {
+        const h = (a.heading * Math.PI) / 180;
+        const kx = 111_320 * Math.cos((a.lat * Math.PI) / 180);
+        const ahead = (a.length / 2 + 3) ;
+        lights.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [a.lng + (Math.sin(h) * ahead) / kx, a.lat + (Math.cos(h) * ahead) / 110_574] }, properties: { color: '#fff1c8' } });
+        const behind = -(a.length / 2 + 0.6);
+        lights.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [a.lng + (Math.sin(h) * behind) / kx, a.lat + (Math.cos(h) * behind) / 110_574] }, properties: { color: '#ff3b30' } });
+      }
+    }
+    this.map.getSource('sw-agents').setData({ type: 'FeatureCollection', features });
+    this.map.getSource('sw-lights').setData({ type: 'FeatureCollection', features: lights });
+  }
+
+  /** Road lines around the view, from the loaded map tiles (for traffic.js). */
+  roadFeatures() {
+    try {
+      return this.map.querySourceFeatures('omt', { sourceLayer: 'transportation' });
+    } catch {
+      return [];
+    }
+  }
+
+  /** Named shops/bars/restaurants… around the view (for neon signs in 3D). */
+  signFeatures() {
+    try {
+      return this.map.querySourceFeatures('omt', { sourceLayer: 'poi' });
+    } catch {
+      return [];
+    }
+  }
 
   setOwnership(records, me) {
     this.records = records;

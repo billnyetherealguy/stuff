@@ -82,7 +82,7 @@ function cityLabel(id, rankFilter, minzoom) {
 export const NEON = ['#22e6ff', '#ff3df2', '#8f6bff', '#2af5a8', '#ffb547'];
 // Places that really have lit signs (OpenStreetMap points of interest), and
 // the neon color their sign glows in.
-const SIGN_CLASSES = {
+export const SIGN_CLASSES = {
   bar: NEON[1], beer: NEON[1], nightclub: NEON[1], music: NEON[1],
   restaurant: '#ff5a4f', fast_food: '#ff5a4f', cafe: NEON[4], ice_cream: '#ff8ad8', bakery: NEON[4],
   cinema: '#ffd166', theatre: '#ffd166', casino: '#ffd166', lodging: NEON[0],

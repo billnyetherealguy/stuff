@@ -47,6 +47,7 @@ const MEMOS = {
   sign: new RegExp(`^(${KEY});c=([0-7]);t=([A-Za-z0-9%._~!*'()-]{0,240})$`),
   revoke: new RegExp(`^(${SIG})$`),
   refund: new RegExp(`^(${SIG})$`),
+  tiles: /^([A-Za-z0-9_-]{20,64})$/,
   coin: new RegExp(`^(${ADDR});s=([A-Za-z0-9]{1,12});p=(\\d{1,13}(?:\\.\\d{1,9})?)$`),
 };
 
@@ -78,6 +79,9 @@ export function buildMemo(action, fields) {
     case 'revoke':
     case 'refund':
       return `solworld:${action}:${fields.ref}`;
+    case 'tiles':
+      // Operator setting: Google Map Tiles API key for realistic 3D (public, domain-restricted).
+      return `solworld:tiles:${fields.apiKey}`;
     case 'coin': {
       // Operator setting: the meme coin and what one token is worth (lamports, up to 9 decimals).
       const lpt = Number(fields.lamportsPerToken).toFixed(9).replace(/\.?0+$/, '');
@@ -118,6 +122,8 @@ export function parseMemo(text) {
       }
       return { action, key: g[1], color: Number(g[2]), text: text.slice(0, 60) };
     }
+    case 'tiles':
+      return { action, apiKey: g[1] };
     case 'coin':
       return { action, mint: g[1], symbol: g[2], lamportsPerToken: Number(g[3]) };
     default:
@@ -211,6 +217,7 @@ export function computeState(events, rules) {
   const { treasury, feeBps = 0, memecoin } = rules;
   // The active meme coin: config.js first, then any settings the treasury
   // publishes on-chain ("coin" actions), each effective from its own time.
+  let key3d = null;
   let coin = memecoin?.mint ? { ...memecoin, prices: [...(memecoin.prices || [])] } : null;
   const buildings = new Map();
   const owners = new Map();
@@ -262,6 +269,10 @@ export function computeState(events, rules) {
 
   for (const raw of events) {
     const ev = { ...raw, actor: actorOf(raw, treasury) };
+    if (ev.action === 'tiles') {
+      if (treasury && ev.signers.includes(treasury) && !revoked.has(ev.sig)) key3d = ev.apiKey;
+      continue;
+    }
     if (ev.action === 'coin') {
       if (treasury && ev.signers.includes(treasury) && !revoked.has(ev.sig) && ev.lamportsPerToken >= 0) {
         const step = { from: ev.time ?? 0, lamportsPerToken: ev.lamportsPerToken };
@@ -408,6 +419,7 @@ export function computeState(events, rules) {
 
   return {
     coin,
+    key3d,
     buildings,
     owners,
     leaderboard: ranked,

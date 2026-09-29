@@ -12,9 +12,11 @@ import nacl from 'tweetnacl';
 import { createTiles } from './tiles.mjs';
 import { createServices } from './services.mjs';
 import { Chain } from './chain.mjs';
+import { createTiles3d } from './tiles3d.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SITE = path.resolve(HERE, '..', '..', 'solworld');
+const CESIUM = path.resolve(HERE, '..', 'node_modules', 'cesium', 'Build', 'Cesium');
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -347,6 +349,19 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
       // <img> tiles (panel close-up) get the SVG render; the map's raster layer fetches PNGs.
       if (e && req.resourceType() === 'image') return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: services.esriTile(+e[1], +e[2], +e[3]) });
       if (e) return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: groundPng(+e[1], +e[2], +e[3]) });
+    }
+    if (host === 'cdn.jsdelivr.net' && url.pathname.startsWith('/npm/cesium@')) {
+      const rel = decodeURIComponent(url.pathname.replace(/^\/npm\/cesium@[^/]+\/Build\/Cesium\//, ''));
+      const file = path.join(CESIUM, rel);
+      if (!file.startsWith(CESIUM) || !fs.existsSync(file)) return route.fulfill({ status: 404, body: '' });
+      return route.fulfill({ status: 200, contentType: TYPES[path.extname(file)] || (file.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream'), headers: { 'access-control-allow-origin': '*' }, body: fs.readFileSync(file) });
+    }
+    if (host === 'assets.ion.cesium.com') return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: encodePng(16, () => [255, 255, 255]) });
+    if (host === 'tile.googleapis.com') {
+      const t3 = (services.tiles3d ||= createTiles3d(tiles.world));
+      if (url.searchParams.get('key') === 'bad-key') return route.fulfill({ status: 403, contentType: 'application/json', body: '{"error":{"code":403}}' });
+      if (url.pathname.endsWith('/root.json')) return json(route, t3.rootJson);
+      if (url.pathname.endsWith('/city.glb')) return route.fulfill({ status: 200, contentType: 'model/gltf-binary', headers: { 'access-control-allow-origin': '*' }, body: t3.glb });
     }
     if (host === 'api.coingecko.com') return json(route, { solana: { usd: 187.42 } });
     if (host === 'fonts.googleapis.com' || host === 'fonts.gstatic.com') {

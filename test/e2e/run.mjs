@@ -577,6 +577,74 @@ async function live(env) {
   }
 }
 
+async function real3d(env) {
+  const config = { realistic3d: { googleKey: 'AIzaHarnessKey000000000000000000000000' } };
+  const { page, log, browser } = await launch({ ...env, config });
+  activePage = page;
+  const idle = () => page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+  try {
+    await step('real3d: street life — cars and people move through Midtown', async () => {
+      await ready(page, env.origin);
+      await page.getByRole('button', { name: 'Start exploring' }).click({ force: true });
+      await page.waitForTimeout(800);
+      await settle(page);
+      await stopMotion(page);
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9794, 40.7515], zoom: 16.3, pitch: 55, bearing: 20 }));
+      await idle();
+      await page.waitForFunction(() => window.solworld.traffic.agents.length > 50, null, { timeout: 20_000 });
+      const before = await page.evaluate(() => window.solworld.traffic.snapshot()[0]);
+      await page.waitForTimeout(1500);
+      const after = await page.evaluate(() => window.solworld.traffic.snapshot()[0]);
+      assert.ok(before.lng !== after.lng || before.lat !== after.lat, 'agents move');
+      await shot(page, '40-street-life');
+    });
+
+    await step('real3d: zooming in switches to real 3D buildings', async () => {
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9794, 40.7515], zoom: 16.9, pitch: 60, bearing: 20 }));
+      await page.waitForFunction(() => window.solworld.r3d.active, null, { timeout: 60_000 });
+      await page.waitForTimeout(8000);
+      assert.ok(await page.evaluate(() => window.solworld.r3d.tileset?.tilesLoaded || window.solworld.r3d.tileset?.root), 'photogrammetry tileset loaded');
+      await page.screenshot({ path: path.join(OUT, '41-real3d.png'), timeout: 120_000 });
+    });
+
+    await step('real3d: at night the real windows glow', async () => {
+      await page.evaluate(() => {
+        window.solworld.r3d.glowUniforms.nightAmount = 1;
+        window.solworld.r3d.glowUniforms.duskAmount = 0;
+      });
+      await page.waitForTimeout(2500);
+      await page.screenshot({ path: path.join(OUT, '42-real3d-night.png'), timeout: 120_000 });
+    });
+
+    await step('real3d: tapping a building in 3D opens it', async () => {
+      await page.mouse.click(880, 520);
+      await page.waitForFunction(() => document.querySelector('#panel.is-open') && document.querySelector('#panel').dataset.tone !== 'resolving', null, { timeout: 30_000 });
+    });
+
+    await step('real3d: zooming far out returns to the map', async () => {
+      await page.evaluate(() => {
+        const C = window.Cesium;
+        window.solworld.r3d.viewer.camera.setView({ destination: C.Cartesian3.fromDegrees(-73.98, 40.74, 6000) });
+      });
+      await page.waitForFunction(() => !window.solworld.r3d.active, null, { timeout: 20_000 });
+    });
+
+    await step('real3d: the middle of nowhere has no traffic', async () => {
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-100.5, 45.2], zoom: 15.6, pitch: 0 }));
+      await idle();
+      await page.waitForTimeout(800);
+      assert.equal(await page.evaluate(() => window.solworld.traffic.agents.length), 0);
+    });
+
+    await step('real3d: no page errors', async () => {
+      assert.deepEqual(log.errors, []);
+      assert.deepEqual(log.console.filter((l) => /^error/.test(l)), []);
+    });
+  } finally {
+    await browser.close();
+  }
+}
+
 async function mobile(env) {
   const { page, log, browser } = await launch({ ...env, config: {}, viewport: { width: 390, height: 844 }, mobile: true });
   try {
@@ -609,6 +677,7 @@ const env = await setup();
 try {
   if (which === 'demo' || which === 'all') await demo(env);
   if (which === 'live' || which === 'all') await live(env);
+  if (which === 'real3d' || which === 'all') await real3d(env);
   if (which === 'mobile' || which === 'all') await mobile(env);
 } finally {
   env.server.close();

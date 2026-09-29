@@ -15,6 +15,9 @@ const DEFAULTS = {
   cluster: 'mainnet-beta',
   marketFeePercent: 5,
   memecoin: { mint: '', symbol: '', solPerToken: [] },
+  // Realistic 3D close-ups (Google Photorealistic 3D Tiles). A Google Maps
+  // Platform key with the "Map Tiles API" enabled, restricted to your domain.
+  realistic3d: { googleKey: '', cesiumIonToken: '' },
   rpc: DEFAULT_RPC,
   priorityFeeMicroLamports: 50_000,
   pollSeconds: 20,
@@ -41,6 +44,7 @@ const DEFAULTS = {
     commonsApi: 'https://commons.wikimedia.org/w/api.php',
     solPrice: 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
     dexscreener: 'https://api.dexscreener.com/latest/dex/tokens/',
+    cesium: 'https://cdn.jsdelivr.net/npm/cesium@1.145.0/Build/Cesium/',
   },
 };
 
@@ -109,6 +113,10 @@ export function loadSettings(raw = {}) {
     priorityFeeMicroLamports: Math.max(0, Number(cfg.priorityFeeMicroLamports) || 0),
     pollMs: Math.max(5, Number(cfg.pollSeconds) || 20) * 1000,
     map: cfg.map,
+    realistic3d: {
+      googleKey: String(cfg.realistic3d?.googleKey || '').trim(),
+      ionToken: String(cfg.realistic3d?.cesiumIonToken || '').trim(),
+    },
     services: cfg.services,
     problems,
     explorer: {

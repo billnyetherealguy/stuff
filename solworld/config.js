@@ -39,6 +39,13 @@ window.SOLWORLD_CONFIG = {
     ],
   },
 
+  // Realistic 3D close-ups (real buildings with real textures, like Google
+  // Earth). Paste a Google Maps Platform key with the "Map Tiles API" enabled,
+  // restricted to your website. You can also set it in /#/operator instead.
+  realistic3d: {
+    googleKey: "",
+  },
+
   // Optional: your own Solana RPC endpoint(s), tried in order. The public
   // endpoints work for a launch; for real traffic add a free one from
   // helius.dev, quicknode.com or triton.one, e.g.

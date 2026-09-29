@@ -15,13 +15,16 @@ import {
   sha256,
   transferInstruction,
 } from './solana.js';
-import { ChainRegistry, DEMO_TREASURY, DemoRegistry, buildMemo, isBuildingKey, openOffers, parseMemo, saleFee, tokenPriceAt } from './registry.js';
+import { ChainRegistry, DEMO_TREASURY, DemoRegistry, SIGN_COLORS, buildMemo, isBuildingKey, openOffers, parseMemo, saleFee, tokenPriceAt } from './registry.js';
 import { WalletManager, isUserRejection } from './wallet.js';
 import { BurnerWallet, verifySignature } from './burner.js';
 import { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } from './market.js';
 import { priceBuilding } from './pricing.js';
 import { sunPosition } from './sun.js';
 import { buildingSkin } from './skin.js';
+import { Realistic3D } from './realistic3d.js';
+import { Traffic } from './traffic.js';
+import { SIGN_CLASSES } from './mapstyle.js';
 import { OsmClient, buildingHeights, geoKey, geoKeyCenter, isOsmKey } from './osm.js';
 import { Geocoder, PhotoFinder, SolPrice, buildingKind, buildingTitle } from './info.js';
 import { MapController, COLORS } from './map.js';
@@ -169,6 +172,8 @@ async function boot() {
     onRevoke: (sig, lamports, to, btn) => operatorAction('revoke', sig, lamports, to, btn),
     onAudit: (box, btn) => audit(box, btn),
     onSetCoin: (coin, btn) => setCoin(coin, btn),
+    onSetKey3d: (apiKey, btn) => publishSetting(buildMemo('tiles', { apiKey }), 'Realistic 3D is on', btn),
+    key3dActive: () => !!(settings.realistic3d.googleKey || registry.state.key3d || settings.realistic3d.ionToken),
     coinMarket: (mint) => coinMarket(mint),
     onHolder: async () => {
       if (!wallet.exists && !(await walletUI.open())) return;
@@ -191,6 +196,10 @@ async function boot() {
       mapc.flyToPreset(p);
     },
     onHidden: () => {
+      setTimeout(() => {
+        paint3DButton();
+        refreshTraffic(true);
+      }, 1200);
       if (innerWidth > 1180) rail.setOpen(true);
       updatePadding();
       updateHint();
@@ -219,6 +228,157 @@ async function boot() {
     },
   });
   createControls($('#controls'), mapc);
+
+  /* ------------------------------------------------- realistic 3D view */
+
+  const r3d = new Realistic3D({
+    container: $('#map3d'),
+    cdnBase: settings.services.cesium,
+    googleKey: settings.realistic3d.googleKey,
+    ionToken: settings.realistic3d.ionToken,
+  });
+  const R3D_PREF = 'solworld:realistic3d';
+  let r3dArmed = true; // re-armed once you zoom back out
+  let r3dBusy = false;
+  const r3dButton = h('button', { class: 'ctrl-pill glass is-hidden', onclick: () => (r3d.active ? leave3D() : enter3D({ manual: true })) }, h('span', { svg: icon('cube', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Realistic 3D'));
+  $('#controls').append(r3dButton);
+  function paint3DButton() {
+    const show = r3d.available && (r3d.active || mapc.zoom >= 14.5) && !hero.visible;
+    r3dButton.classList.toggle('is-hidden', !show);
+    r3dButton.classList.toggle('is-active', r3d.active);
+    r3dButton.querySelector('.ctrl-pill-label').textContent = r3d.active ? 'Map view' : r3dBusy ? 'Loading 3D…' : 'Realistic 3D';
+  }
+  async function enter3D({ manual = false } = {}) {
+    if (!r3d.available || r3d.active || r3dBusy) return;
+    r3dBusy = true;
+    paint3DButton();
+    if (manual) storage.set(R3D_PREF, 'on');
+    const m = mapc.map;
+    try {
+      mapc.stopSpin();
+      mapc.stopOrbit();
+      await r3d.enter({ center: mapc.center, zoom: Math.max(mapc.zoom, manual ? 16.4 : mapc.zoom), pitch: m.getPitch(), bearing: m.getBearing(), fovDeg: m.getVerticalFieldOfView?.() ?? 36.87, heightPx: m.getCanvas().clientHeight });
+      document.body.classList.add('is-3d');
+      if (current) r3d.focus({ center: current.building.center, height: Math.max(current.tileTop || 0, buildingHeights(current.building.tags).top), polygons: current.building.polygons, tone: toneFor(current.key) });
+      refresh3DOverlays();
+      refreshTraffic(true);
+      if (!storage.get('solworld:tip-3d')) {
+        storage.set('solworld:tip-3d', 1);
+        toast({ title: 'Realistic 3D', body: 'Real 3D buildings from Google. Tap any building; zoom out to go back to the map.', iconName: 'cube', duration: 6500 });
+      }
+    } catch (err) {
+      console.warn('[solworld] realistic 3D unavailable', err);
+      r3d.exit();
+      r3dArmed = false;
+      toast({ title: 'Realistic 3D didn’t load', body: /403|401|key|denied/i.test(String(err?.message || err)) ? 'The Google 3D Tiles key was refused. Check the key (Operator tools).' : 'Your device or connection couldn’t load it. The map still works.', tone: 'error' });
+    } finally {
+      r3dBusy = false;
+      paint3DButton();
+    }
+  }
+  function leave3D(cam = r3d.active ? r3d.cameraState() : null) {
+    r3d.exit();
+    document.body.classList.remove('is-3d');
+    r3dArmed = false;
+    storage.set(R3D_PREF, 'off');
+    if (cam) mapc.map.jumpTo({ center: cam.center, zoom: Math.min(cam.zoom, 16.2), pitch: cam.pitch, bearing: cam.bearing });
+    paint3DButton();
+    refreshTraffic(true);
+  }
+  mapc.map.on('zoomend', () => {
+    const z = mapc.zoom;
+    if (z < 16) r3dArmed = true;
+    paint3DButton();
+    if (!r3d.active && r3dArmed && z >= 16.6 && r3d.available && !hero.visible && storage.get(R3D_PREF) !== 'off') enter3D();
+  });
+  r3d.on('moveend', (cam) => {
+    if (!cam) return;
+    if (cam.heightAboveGround > 2600 || cam.zoom < 15.2) {
+      storage.set(R3D_PREF, 'on'); // zooming out isn't "turn it off"
+      r3d.exit();
+      document.body.classList.remove('is-3d');
+      r3dArmed = false;
+      mapc.map.jumpTo({ center: cam.center, zoom: Math.min(cam.zoom, 15.8), pitch: cam.pitch, bearing: cam.bearing });
+      paint3DButton();
+      refreshTraffic(true);
+      return;
+    }
+    // Keep the flat map (hidden underneath) on the same spot: it supplies
+    // roads, shop signs and building footprints for the 3D view.
+    mapc.map.jumpTo({ center: cam.center, zoom: Math.min(19, cam.zoom), pitch: Math.min(60, cam.pitch), bearing: cam.bearing });
+    mapc.map.once('idle', () => {
+      refresh3DOverlays();
+      refreshTraffic();
+    });
+  });
+  r3d.on('pick', async ({ lngLat }) => {
+    const pick = await tileBuildingNear(lngLat).catch(() => null);
+    if (pick) selectPick(pick);
+  });
+  function refresh3DOverlays() {
+    if (!r3d.active) return;
+    const [cx, cy] = mapc.center;
+    const near = (lng, lat, m) => distanceM([cx, cy], [lng, lat]) < m;
+    const records = [...registry.state.buildings.values()].filter((r) => near(r.lng, r.lat, 1500));
+    r3d.setOwned(
+      records
+        .filter((r) => r.key !== current?.key && mapc.outlines.get(r.key))
+        .map((r) => ({ polygons: mapc.outlines.get(r.key), height: buildingHeights(osm.byKey.get(r.key)?.tags || {}).top, mine: r.owner === me() })),
+    );
+    const seen = new Set();
+    const signs = [];
+    for (const f of mapc.signFeatures()) {
+      const p = f.properties || {};
+      const name = p.name_en || p.name;
+      if (!name || !SIGN_CLASSES[p.class] || f.geometry?.type !== 'Point') continue;
+      const [lng, lat] = f.geometry.coordinates;
+      const id = `${name}:${lng.toFixed(4)},${lat.toFixed(4)}`;
+      if (seen.has(id) || !near(lng, lat, 900)) continue;
+      seen.add(id);
+      signs.push({ name, lng, lat, color: SIGN_CLASSES[p.class] });
+    }
+    r3d.setLabels({
+      billboards: records.filter((r) => r.sign?.text).map((r) => ({ lng: r.lng, lat: r.lat, text: r.sign.text, color: SIGN_COLORS[r.sign.color] || SIGN_COLORS[0], height: buildingHeights(osm.byKey.get(r.key)?.tags || {}).top })),
+      signs,
+    });
+  }
+
+  /* ------------------------------------------------------ street life */
+
+  const traffic = new Traffic();
+  let trafficAt = null;
+  function refreshTraffic(force = false) {
+    const z = r3d.active ? 17 : mapc.zoom;
+    if (z < 15 || hero.visible) {
+      if (traffic.agents.length) {
+        traffic.agents = [];
+        mapc.setAgents([]);
+      }
+      trafficAt = null;
+      return;
+    }
+    const center = mapc.center;
+    const night = sunPosition(center[0], center[1]).phase === 'night';
+    if (!force && trafficAt && distanceM(trafficAt.center, center) < 220 && trafficAt.night === night) return;
+    traffic.setArea(center, mapc.roadFeatures(), { night, radius: z >= 17 ? 450 : 700 });
+    // Roads may not be loaded yet: only remember this spot once there was something to drive on.
+    trafficAt = traffic.lanes.car.length || traffic.lanes.foot.length ? { center, night } : null;
+  }
+  mapc.map.on('idle', debounce(() => !r3d.active && refreshTraffic(), 300));
+  let lastFrame = 0;
+  function animateTraffic(t) {
+    requestAnimationFrame(animateTraffic);
+    // ~20 fps on the map, ~12 fps in the heavier realistic 3D view.
+    if (document.hidden || t - lastFrame < (reduced ? 200 : r3d.active ? 80 : 50)) return;
+    const dt = Math.min(0.25, (t - (lastFrame || t)) / 1000);
+    lastFrame = t;
+    if (!traffic.agents.length) return;
+    traffic.step(dt);
+    const snap = traffic.snapshot();
+    if (r3d.active) r3d.setAgents(snap);
+    else if (mapc.zoom >= 15) mapc.setAgents(snap);
+  }
+  requestAnimationFrame(animateTraffic);
   $('#btn-help').innerHTML = icon('info', { size: 18 });
   $('#btn-help').addEventListener('click', () => openHelp(ctx));
   $('.brand').addEventListener('click', (e) => {
@@ -399,8 +559,11 @@ async function boot() {
     setHash(`#/b/${building.key}`);
     if (fly) {
       const top = Math.max(tileTop || 0, buildingHeights(building.tags).top);
-      mapc.flyToBuilding(building.center, { top });
-      if (!reduced) mapc.startOrbit();
+      if (r3d.active) r3d.focus({ center: building.center, height: top, polygons: building.polygons, tone: toneFor(building.key) });
+      else {
+        mapc.flyToBuilding(building.center, { top });
+        if (!reduced) mapc.startOrbit();
+      }
     }
     geocoder.reverse(building.center).then((address) => panel.setAddress(building.key, address));
     // Photos match the time of day at the building: night photos after dark.
@@ -463,6 +626,8 @@ async function boot() {
     panel.close();
     mapc.clearSelection();
     mapc.stopOrbit();
+    r3d.setSelection({});
+    r3d.stopOrbit();
     setHash('');
     updatePadding();
     updateHint();
@@ -872,6 +1037,37 @@ async function boot() {
     }
   }
 
+  /** Operator: publish a treasury-signed setting memo (no SOL moves). */
+  async function publishSetting(memo, doneTitle, btn) {
+    if (!parseMemo(memo)) return void toast({ title: 'That doesn’t look right', body: 'Check what you pasted and try again.', tone: 'error' });
+    if (!live) {
+      await registry.submit({ ...parseMemo(memo), signers: [DEMO_TREASURY], transfers: [{ s: DEMO_TREASURY, d: DEMO_TREASURY, l: 0 }], tokens: [] });
+      toast({ title: doneTitle, tone: 'success' });
+      return true;
+    }
+    if (!(await ensureTreasuryWallet())) return false;
+    btn?.setAttribute('disabled', '');
+    const progress = toast({ title: 'Saving', body: 'Approve in your treasury wallet (no SOL is moved).', tone: 'pending' });
+    try {
+      const { blockhash } = await rpc.getLatestBlockhash();
+      const message = compileMessage({
+        payer: settings.treasury,
+        recentBlockhash: blockhash,
+        instructions: [transferInstruction({ from: settings.treasury, to: settings.treasury, lamports: 0, references: [registry.address] }), memoInstruction(memo)],
+      });
+      const sig = await ext.signAndSend(serializeUnsignedTransaction(message));
+      await rpc.confirm(sig);
+      await registry.waitFor(sig);
+      progress.update({ tone: 'success', title: doneTitle, body: '', link: { href: settings.explorer.tx(sig), label: 'View transaction' } });
+      return true;
+    } catch (err) {
+      progress.update({ tone: isUserRejection(err) ? 'info' : 'error', title: isUserRejection(err) ? 'Cancelled' : 'Failed', body: isUserRejection(err) ? '' : friendlyError(err) });
+      return false;
+    } finally {
+      btn?.removeAttribute('disabled');
+    }
+  }
+
   /** Current market price of a token in SOL (DexScreener), to prefill the operator form. */
   async function coinMarket(mint) {
     const res = await fetch(`${settings.services.dexscreener}${encodeURIComponent(mint)}`);
@@ -1005,6 +1201,8 @@ async function boot() {
     const records = [...state.buildings.values()];
     mapc.setOwnership(records, me());
     if (current) mapc.setSelection({ key: current.key, polygons: current.building.polygons, anchor: current.building.center, tone: toneFor(current.key) });
+    if (current && r3d.active) r3d.setSelection({ polygons: current.building.polygons, height: Math.max(current.tileTop || 0, buildingHeights(current.building.tags).top), tone: toneFor(current.key) });
+    if (!settings.realistic3d.googleKey && registry.state.key3d) r3d.setKey(registry.state.key3d);
     rail.render();
     stats.update(state.totals);
     hero.update(state.totals);
@@ -1126,7 +1324,7 @@ async function boot() {
   setInterval(() => wallet.exists && document.visibilityState === 'visible' && wallet.refreshBalance(), live ? 30_000 : 60_000);
 
   // Handy for debugging from the console.
-  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx };
+  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx, r3d, traffic };
 }
 
 /* -------------------------------------------------------------- demo */

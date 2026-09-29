@@ -332,6 +332,16 @@ async function demo(env) {
       await page.waitForSelector('.modal-title >> text=Operator');
       await page.waitForTimeout(700);
       await shot(page, '16-operator');
+      // Enter a meme coin right on the site.
+      const coinForm = page.locator('.op-coin');
+      await coinForm.getByPlaceholder('Token mint address').fill('So1wor1dMint1111111111111111111111111111111');
+      await coinForm.getByPlaceholder('Ticker (e.g. SOLW)').fill('SOLW');
+      await coinForm.locator('input[type=number]').fill('0.5');
+      await coinForm.getByRole('button', { name: /Update coin|Save coin/ }).click();
+      await page.waitForSelector('.toast >> text=$SOLW is live', { timeout: 10_000 });
+      const coin = await page.evaluate(() => window.solworld.registry.state.coin);
+      assert.equal(coin.symbol, 'SOLW');
+      assert.equal(coin.prices.at(-1).lamportsPerToken, 500);
       await page.keyboard.press('Escape');
       await page.keyboard.press('Escape');
     });
@@ -502,6 +512,25 @@ async function live(env) {
       assert.equal(await page.evaluate((k) => window.solworld.registry.state.buildings.get(k).holder, key), holderAddr);
       await stopMotion(page);
       await shot(page, '24-live-credit');
+    });
+
+    await step('live: operator enters the meme coin on the site, signed by the treasury', async () => {
+      harness.setKeypair(treasury);
+      await closePanel(page);
+      await page.goto(`${env.origin}/#/operator`);
+      await page.waitForSelector('.modal-title >> text=Operator tools', { timeout: 20_000 });
+      const form = page.locator('.op-coin');
+      const newMint = bs58.encode(nacl.randomBytes(32));
+      await form.getByPlaceholder('Token mint address').fill(newMint);
+      await form.getByPlaceholder('Ticker (e.g. SOLW)').fill('SOLW');
+      await form.locator('input[type=number]').fill('2');
+      await form.getByRole('button', { name: /Update coin|Save coin/ }).click();
+      await page.getByRole('button', { name: /Harness Wallet/ }).click();
+      await page.waitForSelector('.toast >> text=$SOLW is live', { timeout: 30_000 });
+      assert.match(chain.sent.at(-1).memo, new RegExp(`^solworld:coin:${newMint};s=SOLW;p=2000$`));
+      assert.equal(await page.evaluate(() => window.solworld.registry.state.coin.symbol), 'SOLW');
+      await shot(page, '26-live-coin');
+      await page.keyboard.press('Escape');
     });
 
     await step('live: withdraw sends SOL out of the Solworld wallet', async () => {

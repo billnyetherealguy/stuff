@@ -45,6 +45,7 @@ const MEMOS = {
   sign: new RegExp(`^(${KEY});c=([0-7]);t=([A-Za-z0-9%._~!*'()-]{0,240})$`),
   revoke: new RegExp(`^(${SIG})$`),
   refund: new RegExp(`^(${SIG})$`),
+  coin: new RegExp(`^(${ADDR});s=([A-Za-z0-9]{1,12});p=(\\d{1,13}(?:\\.\\d{1,9})?)$`),
 };
 
 export const MIN_PRICE = 1_000_000; // protocol floor: 0.001 SOL
@@ -75,6 +76,11 @@ export function buildMemo(action, fields) {
     case 'revoke':
     case 'refund':
       return `solworld:${action}:${fields.ref}`;
+    case 'coin': {
+      // Operator setting: the meme coin and what one token is worth (lamports, up to 9 decimals).
+      const lpt = Number(fields.lamportsPerToken).toFixed(9).replace(/\.?0+$/, '');
+      return `solworld:coin:${fields.mint};s=${String(fields.symbol).replace(/^\$/, '')};p=${lpt}`;
+    }
     default:
       throw new Error(`Unknown action: ${action}`);
   }
@@ -110,6 +116,8 @@ export function parseMemo(text) {
       }
       return { action, key: g[1], color: Number(g[2]), text: text.slice(0, 60) };
     }
+    case 'coin':
+      return { action, mint: g[1], symbol: g[2], lamportsPerToken: Number(g[3]) };
     default:
       return { action, ref: g[1] };
   }
@@ -199,6 +207,9 @@ function actorOf(ev, treasury) {
  */
 export function computeState(events, rules) {
   const { treasury, feeBps = 0, memecoin } = rules;
+  // The active meme coin: config.js first, then any settings the treasury
+  // publishes on-chain ("coin" actions), each effective from its own time.
+  let coin = memecoin?.mint ? { ...memecoin, prices: [...(memecoin.prices || [])] } : null;
   const buildings = new Map();
   const owners = new Map();
   const offers = new Map();
@@ -249,6 +260,14 @@ export function computeState(events, rules) {
 
   for (const raw of events) {
     const ev = { ...raw, actor: actorOf(raw, treasury) };
+    if (ev.action === 'coin') {
+      if (treasury && ev.signers.includes(treasury) && !revoked.has(ev.sig) && ev.lamportsPerToken >= 0) {
+        const step = { from: ev.time ?? 0, lamportsPerToken: ev.lamportsPerToken };
+        coin = coin?.mint === ev.mint ? { ...coin, symbol: ev.symbol, prices: [...coin.prices, step] } : { mint: ev.mint, symbol: ev.symbol, prices: [step] };
+        bySig.set(ev.sig, { record: { kind: 'coin', mint: ev.mint } });
+      }
+      continue;
+    }
     if (ev.action === 'revoke' || ev.action === 'refund') continue;
     if (!ev.actor) continue; // not paying the treasury: not a Solworld action
     const isRevoked = revoked.has(ev.sig);
@@ -274,12 +293,12 @@ export function computeState(events, rules) {
       let holder = null;
       if (ev.action === 'hold') {
         holder = links.get(ev.actor);
-        if (!memecoin?.mint || !holder) {
+        if (!coin?.mint || !holder) {
           voidEvent(ev, 'unlinked');
           continue;
         }
-        const tokens = ev.tokens.filter((t) => t.owner === holder && t.mint === memecoin.mint).reduce((a, t) => a + t.amount, 0);
-        const credit = tokens * tokenPriceAt(memecoin.prices, ev.time);
+        const tokens = ev.tokens.filter((t) => t.owner === holder && t.mint === coin.mint).reduce((a, t) => a + t.amount, 0);
+        const credit = tokens * tokenPriceAt(coin.prices, ev.time);
         const spent = holderSpent.get(holder) || 0;
         if (spent + ev.price > credit) {
           voidEvent(ev, 'no-credit');
@@ -386,6 +405,7 @@ export function computeState(events, rules) {
   activity.reverse();
 
   return {
+    coin,
     buildings,
     owners,
     leaderboard: ranked,

@@ -5,6 +5,7 @@ import * as maplibregl from '../../vendor/maplibre-6.11.2/maplibre-gl.mjs';
 import { Emitter } from './emitter.js';
 import { buildStyle } from './mapstyle.js';
 import { FACADE_IDS, facadeImage } from './facade.js';
+import { sunPosition } from './sun.js';
 import { SIGN_COLORS } from './registry.js';
 import {
   inflatePolygon,
@@ -88,7 +89,7 @@ export class MapController extends Emitter {
 
     // Facade patterns are drawn on demand, the first time a tile needs one.
     this.map.setMissingStyleImageResolver(async (id) => {
-      if (FACADE_IDS.includes(id) && !this.map.hasImage(id)) this.map.addImage(id, facadeImage(id), { pixelRatio: 4 });
+      if (FACADE_IDS.includes(id) && !this.map.hasImage(id)) this.map.addImage(id, facadeImage(id, this.phase || 'night'), { pixelRatio: 4 });
     });
     this.map.on('load', () => this._onLoad());
     this.map.once('idle', () => this.emit('first-idle'));
@@ -229,7 +230,52 @@ export class MapController extends Emitter {
     this.ready = true;
     this._pushPoints();
     this.refreshShells();
+    this.updateDaylight();
+    this.map.on('moveend', () => this.updateDaylight());
+    setInterval(() => this.updateDaylight(), 120_000);
     this.emit('ready');
+  }
+
+  /**
+   * Lights the map with the real sun at the view center: the light comes from
+   * where the sun is right now, and satellite ground, facades, neon and sky
+   * switch between day, golden hour and night.
+   */
+  updateDaylight(date = new Date()) {
+    if (!this.ready) return;
+    const m = this.map;
+    const [lng, lat] = this.center;
+    const sun = sunPosition(lng, lat, date);
+    const { phase } = sun;
+    const night = phase === 'night';
+    m.setLight({
+      anchor: 'map',
+      position: [1.4, night ? (sun.bearing + 180) % 360 : sun.bearing, night ? 40 : Math.min(84, Math.max(10, 90 - sun.altitude))],
+      color: { day: '#fff4e2', dusk: '#ffb07a', night: '#a9bbff' }[phase],
+      intensity: { day: 0.5, dusk: 0.44, night: 0.3 }[phase],
+    });
+    this.sun = sun;
+    if (this.phase === phase) return;
+    this.phase = phase;
+    for (const id of FACADE_IDS) if (m.hasImage(id)) m.updateImage(id, facadeImage(id, phase));
+    const paint = (layer, prop, value) => m.getLayer(layer) && m.setPaintProperty(layer, prop, value);
+    const sat = { day: [0.97, -0.05, 0.96], dusk: [0.72, -0.12, 0.9], night: [0.42, -0.45, 0.84] }[phase];
+    paint('satellite', 'raster-brightness-max', sat[0]);
+    paint('satellite', 'raster-saturation', sat[1]);
+    paint('satellite', 'raster-opacity', ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, sat[2]]);
+    const neon = { day: 0.12, dusk: 0.6, night: 1 }[phase];
+    paint('road-neon', 'line-opacity', 0.32 * neon);
+    paint('building-neon-glow', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.6 * neon]);
+    paint('building-neon', 'line-opacity', ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.95 * neon]);
+    const blocks = { day: ['#4d525b', '#5d626c', '#6f7580'], dusk: ['#2a2527', '#342d2f', '#40383a'], night: ['#16181d', '#1c1f25', '#232730'] }[phase];
+    paint('building-3d', 'fill-extrusion-color', ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 5], 0, blocks[0], 80, blocks[1], 250, blocks[2]]);
+    const sky = {
+      day: { 'sky-color': '#0c1b33', 'horizon-color': '#4f78b0', 'fog-color': '#1a2433' },
+      dusk: { 'sky-color': '#140d1c', 'horizon-color': '#b0603a', 'fog-color': '#1a0f14' },
+      night: { 'sky-color': '#000000', 'horizon-color': '#0d1120', 'fog-color': '#000000' },
+    }[phase];
+    m.setSky({ ...m.getStyle().sky, ...sky });
+    this.emit('daylight', sun);
   }
 
   _wireInteraction() {

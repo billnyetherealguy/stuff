@@ -1,5 +1,6 @@
 // Loader, hero, stats, map controls, hints, status pill and info modals.
 import { FEATURED } from '../cities.js';
+import { tokenPriceAt } from '../registry.js';
 import { avatar, countTo, fmtInt, fmtSol, h, shortAddr, timeAgo } from '../util.js';
 import { BRAND_MARK, icon } from './icons.js';
 import { openModal } from './feedback.js';
@@ -278,6 +279,70 @@ export function openOperator(ctx) {
       settings.live ? h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => ctx.onRefund(v, e.currentTarget) }, 'Refund') : null,
     );
 
+  // Meme coin: entered here, saved on-chain (signed by the treasury wallet).
+  const coin = settings.memecoinView;
+  const perMillion = (c) => (c ? (tokenPriceAt(c.prices, Math.floor(Date.now() / 1000)) * 1e6) / 1e9 : null);
+  const mintIn = h('input', { class: 'field-input', placeholder: 'Token mint address', spellcheck: 'false', autocomplete: 'off', value: coin?.mint || '' });
+  const symIn = h('input', { class: 'field-input', placeholder: 'Ticker (e.g. SOLW)', maxlength: '12', value: coin?.symbol || '' });
+  const priceIn = h('input', { class: 'field-input', type: 'number', min: '0', step: 'any', placeholder: 'SOL', value: coin ? String(+perMillion(coin).toPrecision(6)) : '' });
+  const coinMsg = h('p', { class: 'field-error' });
+  const coinHint = h('p', { class: 'modal-fine' });
+  const updateHint = () => {
+    const v = Number(priceIn.value);
+    coinHint.textContent = v > 0 ? `Example: a holder with 1,000,000 $${symIn.value || 'TOKEN'} gets ${fmtSol(v * 1e9)} SOL to spend on buildings.` : 'Holders get building credit worth what their tokens are worth in SOL.';
+  };
+  priceIn.addEventListener('input', updateHint);
+  symIn.addEventListener('input', updateHint);
+  updateHint();
+  const coinForm = h(
+    'div',
+    { class: 'form op-coin' },
+    coin ? h('div', { class: 'holder-preview' }, h('b', null, `$${coin.symbol} is active`), ` · 1,000,000 tokens = ${fmtSol(perMillion(coin) * 1e9)} SOL of credit`) : h('p', { class: 'op-empty' }, 'No coin set yet. Holders can’t use credit until you add one.'),
+    h('label', null, 'Token mint', mintIn),
+    h('div', { class: 'field-row' }, h('label', { class: 'grow' }, 'Ticker', symIn), h('label', { class: 'grow' }, 'Value of 1,000,000 tokens', h('div', { class: 'field-row' }, priceIn, h('span', { class: 'field-unit' }, 'SOL')))),
+    coinHint,
+    coinMsg,
+    h(
+      'div',
+      { class: 'field-row' },
+      h(
+        'button',
+        {
+          class: 'btn btn--ghost btn--sm',
+          onclick: async (e) => {
+            const btn = e.currentTarget;
+            coinMsg.textContent = '';
+            btn.setAttribute('disabled', '');
+            try {
+              const m = await ctx.coinMarket(mintIn.value.trim());
+              priceIn.value = String(+(m.sol * 1e6).toPrecision(6));
+              if (!symIn.value) symIn.value = m.symbol.replace(/[^A-Za-z0-9]/g, '').slice(0, 12);
+              updateHint();
+            } catch (err) {
+              coinMsg.textContent = err.message;
+            } finally {
+              btn.removeAttribute('disabled');
+            }
+          },
+        },
+        'Use current market price',
+      ),
+      h(
+        'button',
+        {
+          class: 'btn btn--primary btn--sm',
+          onclick: (e) => {
+            coinMsg.textContent = '';
+            const sol = Number(priceIn.value) / 1e6;
+            if (!(sol > 0)) return void (coinMsg.textContent = 'Enter what 1,000,000 tokens are worth in SOL.');
+            ctx.onSetCoin({ mint: mintIn.value.trim(), symbol: symIn.value.trim().replace(/^\$/, ''), sol }, e.currentTarget);
+          },
+        },
+        coin ? 'Update coin' : 'Save coin',
+      ),
+    ),
+  );
+
   openModal({
     eyebrow: settings.live ? 'Live' : 'Demo',
     title: 'Operator tools',
@@ -304,6 +369,8 @@ export function openOperator(ctx) {
             h('p', { class: 'modal-fine' }, 'Refunds, revokes and billboard removals are signed by your treasury wallet (Phantom asks you to approve each one).', connected() ? '' : ' You’ll be asked to connect it.'),
           )
         : null,
+      h('h3', { class: 'op-h' }, 'Your meme coin'),
+      coinForm,
       h('h3', { class: 'op-h' }, `Refunds owed (${owed.length})`),
       owed.length ? h('div', { class: 'op-refunds' }, owed.map(refundRow)) : h('p', { class: 'op-empty' }, 'Nothing to refund. When two people pay for the same building at once, the second payment shows up here.'),
       h('h3', { class: 'op-h' }, 'Price audit'),
@@ -319,7 +386,7 @@ export function openOperator(ctx) {
             ),
           )
         : h('p', { class: 'op-empty' }, 'No billboards yet.'),
-      h('p', { class: 'modal-fine' }, 'To change the treasury, fee or meme-coin price, edit config.js and redeploy.'),
+      h('p', { class: 'modal-fine' }, 'Coin changes apply from the moment you save them; past purchases keep the price they had. To change the treasury or fee, edit config.js and redeploy.'),
     ),
     actions: [{ label: 'Close', kind: 'ghost' }],
   });

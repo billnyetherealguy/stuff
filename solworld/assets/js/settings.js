@@ -31,13 +31,16 @@ const DEFAULTS = {
     overpass: [
       'https://overpass-api.de/api/interpreter',
       'https://overpass.private.coffee/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
       'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
     ],
     photon: 'https://photon.komoot.io',
     wikipedia: 'https://en.wikipedia.org/w/api.php',
     wikidata: 'https://www.wikidata.org/w/api.php',
     commonsFile: 'https://commons.wikimedia.org/wiki/Special:FilePath/',
+    commonsApi: 'https://commons.wikimedia.org/w/api.php',
     solPrice: 'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+    dexscreener: 'https://api.dexscreener.com/latest/dex/tokens/',
   },
 };
 

@@ -103,7 +103,7 @@ export function buildingHeights(tags = {}) {
 }
 
 export class OsmClient {
-  constructor({ endpoints, storage, timeoutMs = 15_000 }) {
+  constructor({ endpoints, storage, timeoutMs = 12_000 }) {
     this.endpoints = endpoints;
     this.storage = storage;
     this.timeoutMs = timeoutMs;
@@ -132,37 +132,96 @@ export class OsmClient {
     this.storage?.set(CACHE_KEY, slim);
   }
 
-  async query(ql) {
+  /**
+   * Runs an Overpass query. Public Overpass servers are often busy, so the
+   * request is hedged: the next server is tried in parallel if the first is
+   * slow, and the first good answer wins (the others are cancelled).
+   */
+  async query(ql, { hedgeMs = 1500 } = {}) {
     if (this.inflight.has(ql)) return this.inflight.get(ql);
-    const run = (async () => {
+    const run = new Promise((resolve, reject) => {
+      const n = this.endpoints.length;
+      const controllers = [];
+      const timers = [];
+      let failed = 0;
+      let started = 0;
+      let done = false;
       let lastError;
-      for (let attempt = 0; attempt < this.endpoints.length; attempt++) {
-        const url = this.endpoints[(this.cursor + attempt) % this.endpoints.length];
+      const finish = () => {
+        done = true;
+        timers.forEach(clearTimeout);
+        controllers.forEach((c) => c.abort());
+      };
+      const launch = () => {
+        if (done || started >= n) return;
+        const index = (this.cursor + started++) % n;
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-        try {
-          const res = await fetch(url, {
-            method: 'POST',
-            body: new URLSearchParams({ data: ql }),
-            signal: controller.signal,
-          });
-          if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-          const json = await res.json();
-          this.cursor = (this.cursor + attempt) % this.endpoints.length;
-          return json;
-        } catch (err) {
-          lastError = err;
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-      throw lastError || new Error('Overpass unavailable');
-    })();
+        controllers.push(controller);
+        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+        timers.push(timeout);
+        fetch(this.endpoints[index], { method: 'POST', body: new URLSearchParams({ data: ql }), signal: controller.signal })
+          .then(async (res) => {
+            if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
+            const json = await res.json();
+            if (done) return;
+            this.cursor = index; // remember the server that answered
+            finish();
+            resolve(json);
+          })
+          .catch((err) => {
+            if (done) return;
+            lastError = err;
+            failed++;
+            if (failed >= n) {
+              finish();
+              reject(lastError || new Error('Overpass unavailable'));
+            } else launch(); // failed fast: try the next server right away
+          })
+          .finally(() => clearTimeout(timeout));
+      };
+      launch();
+      for (let i = 1; i < n; i++) timers.push(setTimeout(launch, hedgeMs * i));
+    });
     this.inflight.set(ql, run);
     try {
       return await run;
     } finally {
       this.inflight.delete(ql);
+    }
+  }
+
+  _ingest(json, point) {
+    let best = null;
+    for (const el of json.elements || []) {
+      if (el.tags?.building === 'no') continue;
+      const building = toBuilding(el);
+      if (!building) continue;
+      this.remember(building);
+      if (point && building.polygons.some((p) => pointInPolygon(point, p)) && (!best || building.area < best.area)) best = building;
+    }
+    return best;
+  }
+
+  /**
+   * Loads every building around `center` in the background, so clicks nearby
+   * resolve instantly from memory. Skips areas already covered.
+   */
+  async prefetchArea(center, radius = 350) {
+    if (this.coverage.some((c) => distanceM(center, c.center) <= c.radius - radius * 0.6)) return;
+    const key = `${center[0].toFixed(3)},${center[1].toFixed(3)}`;
+    if (this._prefetching === key) return;
+    this._prefetching = key;
+    try {
+      const [lng, lat] = center.map((n) => n.toFixed(6));
+      const around = `(around:${radius},${lat},${lng})`;
+      const json = await this.query(`[out:json][timeout:25];(way[building]${around};relation[building][type=multipolygon]${around};);out tags geom;`, { hedgeMs: 4000 });
+      this._ingest(json);
+      this.coverage.push({ center, radius });
+      if (this.coverage.length > 200) this.coverage.shift();
+    } catch {
+      // best effort; clicks fall back to a direct lookup
+    } finally {
+      if (this._prefetching === key) this._prefetching = null;
     }
   }
 
@@ -193,19 +252,12 @@ export class OsmClient {
       const [lng, lat] = point.map((n) => n.toFixed(7));
       const around = `(around:${radius},${lat},${lng})`;
       const ql =
-        `[out:json][timeout:20];(way[building]${around};relation[building][type=multipolygon]${around};` +
+        `[out:json][timeout:12];(way[building]${around};relation[building][type=multipolygon]${around};` +
         `way[aeroway~"^(terminal|hangar)$"]${around};);out tags geom;`;
       const json = await this.query(ql);
       this.coverage.push({ center: point, radius });
       if (this.coverage.length > 200) this.coverage.shift();
-      let best = null;
-      for (const el of json.elements || []) {
-        if (el.tags?.building === 'no') continue;
-        const building = toBuilding(el);
-        if (!building) continue;
-        this.remember(building);
-        if (building.polygons.some((p) => pointInPolygon(point, p)) && (!best || building.area < best.area)) best = building;
-      }
+      const best = this._ingest(json, point);
       if (best) return best;
       radius = Math.min(600, radius * 3);
     }

@@ -206,3 +206,63 @@ test('meme-coin credit: linked holders take buildings up to their holdings value
   assert.equal(registry.state.buildings.has('w3'), false);
   assert.equal(registry.state.voids.find((v) => v.key === 'w3').reason, 'revoked');
 });
+
+test('operator sets the meme coin on-chain; only the treasury can, and prices apply from then on', async () => {
+  const { chain, rpc } = world();
+  const treasuryKp = nacl.sign.keyPair();
+  const treasury = bs58.encode(treasuryKp.publicKey);
+  chain.airdrop(treasury, 2 * SOL);
+  const reference = await deriveRegistryAddress(treasury);
+  const registry = new ChainRegistry({ rpc, treasury, cluster: 'localnet', rules: { treasury, feeBps: 500, memecoin: null }, storage: memoryStorage() });
+  await registry.init();
+  const blockhash = async () => (await rpc.getLatestBlockhash()).blockhash;
+  const mint = bs58.encode(nacl.randomBytes(32));
+
+  // Someone else can't set it.
+  const mallory = await wallet(rpc, chain, 0.01);
+  await mallory.send(actionMessage({ from: mallory.address, treasury, reference, memo: buildMemo('coin', { mint, symbol: 'FAKE', lamportsPerToken: 1e9 }) }, await blockhash()));
+  await registry.sync();
+  assert.equal(registry.state.coin, null);
+
+  // The treasury can (0-SOL transfer to itself carries the registry reference).
+  const setCoin = async (lamportsPerToken) => {
+    const msg = compileMessage({
+      payer: treasury,
+      recentBlockhash: await blockhash(),
+      instructions: [transferInstruction({ from: treasury, to: treasury, lamports: 0, references: [reference] }), memoInstruction(buildMemo('coin', { mint, symbol: 'SOLW', lamportsPerToken }))],
+    });
+    const wire = serializeUnsignedTransaction(msg);
+    placeSignature(wire, msg, treasury, nacl.sign.detached(msg.bytes, treasuryKp.secretKey));
+    await rpc.sendRawTransaction(wire);
+  };
+  await setCoin(0.5); // 0.5 lamports per token: 1,000,000 tokens = 0.0005 SOL
+  await registry.sync();
+  assert.equal(registry.state.coin.mint, mint);
+  assert.equal(registry.state.coin.symbol, 'SOLW');
+  assert.equal(registry.state.coin.prices.at(-1).lamportsPerToken, 0.5);
+
+  // A linked holder spends credit at that price.
+  const erin = await wallet(rpc, chain, 0.01);
+  const holder = nacl.sign.keyPair();
+  const holderAddr = bs58.encode(holder.publicKey);
+  const tokenAccount = bs58.encode(nacl.randomBytes(32));
+  chain.setTokenAccount(tokenAccount, { mint, owner: holderAddr, uiAmount: 4_000_000 }); // = 2,000,000 lamports of credit
+  const link = actionMessage({ from: erin.address, treasury, reference, memo: buildMemo('link', { holder: holderAddr }), memoSigners: [holderAddr] }, await blockhash());
+  const lw = serializeUnsignedTransaction(link);
+  placeSignature(lw, link, holderAddr, nacl.sign.detached(link.bytes, holder.secretKey));
+  await erin.signInto(lw, link);
+  await rpc.sendRawTransaction(lw);
+  const hold = async (key, price) => erin.send(actionMessage({ from: erin.address, treasury, reference, memo: buildMemo('hold', { key, center: [0, 0], price }), extraRefs: [tokenAccount] }, await blockhash()));
+  await hold('w11', 1_500_000);
+  await hold('w12', 1_000_000); // over the 2,000,000 credit
+  await registry.sync();
+  assert.ok(registry.state.buildings.has('w11'));
+  assert.equal(registry.state.voids.find((v) => v.key === 'w12').reason, 'no-credit');
+
+  // Price goes up: the remaining credit grows, past purchases unaffected.
+  await setCoin(1);
+  await hold('w13', 1_000_000);
+  await registry.sync();
+  assert.ok(registry.state.buildings.has('w13'));
+  assert.equal(registry.state.buildings.get('w11').price, 1_500_000);
+});

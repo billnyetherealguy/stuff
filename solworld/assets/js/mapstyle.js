@@ -79,6 +79,12 @@ function cityLabel(id, rankFilter, minzoom) {
   };
 }
 
+export const NEON = ['#22e6ff', '#ff3df2', '#8f6bff', '#2af5a8', '#ffb547'];
+// About one building in four gets neon trim, in a color picked from its height.
+const HEIGHT_N = ['floor', ['coalesce', ['get', 'render_height'], 5]];
+const NEON_PICK = ['==', ['%', HEIGHT_N, 4], 1];
+const NEON_COLOR = ['match', ['%', HEIGHT_N, 5], 0, NEON[0], 1, NEON[1], 2, NEON[2], 3, NEON[3], NEON[4]];
+
 export const CLOSE_UP_ZOOM = 16; // buildings switch to lit, windowed facades here
 
 export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMaxZoom = 19, satelliteAttribution }) {
@@ -301,6 +307,23 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
       },
 
       {
+        // Neon light along the big streets (brightest at night; see map.js daylight).
+        id: 'road-neon',
+        type: 'line',
+        source: 'omt',
+        'source-layer': 'transportation',
+        minzoom: 12.5,
+        filter: ['all', isLine, notTunnelOrBridge, classIn('motorway', 'trunk', 'primary', 'secondary')],
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': ['match', ['get', 'class'], 'motorway', NEON[1], 'trunk', NEON[0], 'primary', NEON[0], NEON[2]],
+          'line-width': width(12.5, 3, 16, 14, 19, 46),
+          'line-blur': width(12.5, 3, 16, 10, 19, 30),
+          'line-opacity': 0.32,
+        },
+      },
+
+      {
         id: 'building-2d',
         type: 'fill',
         source: 'omt',
@@ -321,6 +344,34 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
         'source-layer': 'building',
         minzoom: 13,
         paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
+      },
+      {
+        // Neon trim glowing at the base of some buildings (underneath the 3D shapes).
+        id: 'building-neon-glow',
+        type: 'line',
+        source: 'omt',
+        'source-layer': 'building',
+        minzoom: 15,
+        filter: NEON_PICK,
+        paint: {
+          'line-color': NEON_COLOR,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 15, 3, 18, 16],
+          'line-blur': ['interpolate', ['linear'], ['zoom'], 15, 3, 18, 12],
+          'line-opacity': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.6],
+        },
+      },
+      {
+        id: 'building-neon',
+        type: 'line',
+        source: 'omt',
+        'source-layer': 'building',
+        minzoom: 15,
+        filter: NEON_PICK,
+        paint: {
+          'line-color': NEON_COLOR,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 15, 0.6, 18, 2.2],
+          'line-opacity': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.8, 0.95],
+        },
       },
       {
         id: 'building-3d',

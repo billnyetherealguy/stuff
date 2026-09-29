@@ -29,25 +29,19 @@ Every building purchase, and 5% of every resale between players (`marketFeePerce
 
 Set `treasury: ""` to run in **demo mode**, where everything works but nothing real moves.
 
-### 2. When your meme coin launches
+### 2. When your meme coin launches: enter it on the site
 
-Fill in `memecoin` in `config.js` and redeploy:
+No code editing needed. Open your site at **`/#/operator`** (or **How it works → Operator tools**) and fill in **Your meme coin**:
 
-```js
-memecoin: {
-  mint: "YOUR_TOKEN_MINT_ADDRESS",
-  symbol: "TICKER",
-  solPerToken: [
-    { from: "2026-10-01T00:00:00Z", sol: 0.0000001 },   // what ONE token is worth in SOL
-  ],
-},
-```
+- **Token mint:** the coin's mint address from pump.fun or your launch page.
+- **Ticker:** for example `SOLW`.
+- **Value of 1,000,000 tokens (in SOL):** tap **Use current market price** to fill it in from DexScreener, or type your own number.
 
-Holders paste the wallet that holds the coin and approve **one signature** with it. The signature proves the wallet is theirs and moves nothing. That wallet's coins, times `sol`, become building credit. For example, coins worth 0.56 SOL give 0.56 SOL of buildings. Credit is used up as buildings are taken, and it can't be spent twice.
+Then tap **Save coin** and approve in Phantom with your treasury wallet (`8tiw…KpV`). No SOL moves; the setting is saved on Solana, so every visitor gets it instantly without a redeploy. To change the price later, update it the same way. New prices apply from that moment, and earlier purchases keep the price they had.
 
-The token price is **the number you set**, not a live market price. That keeps every visitor's ownership records identical. To update it, **add a new line** with the date it starts. Don't edit old lines, because past credit is checked against the price at the time.
+After that, holders tap **Buy with my $TICKER holdings** on any building (or **Wallet → Use your $TICKER**), paste the wallet that holds the coin, and approve **one signature** with it. The signature proves the wallet is theirs and moves nothing. The coins' value becomes building credit. For example, coins worth 0.56 SOL give 0.56 SOL of buildings, and credit can't be spent twice.
 
-Until `mint` is filled in, the meme-coin option stays hidden.
+The `memecoin` block in `config.js` still works as an alternative, but the on-site setting is easier.
 
 ### 3. Deploy (pick one)
 
@@ -127,7 +121,10 @@ It also shows totals: revenue, volume, buildings, owners and sales.
 
 ### The map
 
-- **Map:** vector tiles from [OpenFreeMap](https://openfreemap.org) (free, no API key) with a custom near-black style and MapLibre GL's globe projection. From zoom 16, buildings switch to procedurally lit facades and the ground fades to darkened [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9).
+- **Map:** vector tiles from [OpenFreeMap](https://openfreemap.org) (free, no API key) with a custom near-black style and MapLibre GL's globe projection. From zoom 16, buildings get brick, concrete, glass and stone facades and the ground fades to [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9).
+- **The real sun:** lighting follows the sun's actual position at the place you're looking at, right now. By day, the light comes from where the sun is, glass reflects the sky and the satellite ground is bright. At golden hour everything turns warm. At night, walls go dark, some windows light up with a soft glow, and neon trims the buildings and big streets.
+- **Photos match the time of day:** after dark, a building shows a night photo when one exists (Wikidata "nighttime view" or Wikimedia Commons), with a soft bloom so the lit windows glow. The satellite close-up is graded to night with glowing windows. A chip shows whether it's day, golden hour or night there now.
+- **Speed:** building lookups ask several OpenStreetMap servers at once and take the first answer. Buildings around where you're looking load in the background, so taps are usually instant.
 - **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org), identified by its OSM element (`w…`/`r…`). Clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test.
 - **What it looks like:** a satellite close-up with the footprint traced, a real photo from Wikidata/Wikimedia Commons when there is one, and a Google Street View link.
 - **Search:** [Photon](https://photon.komoot.io). You can also paste a building ID or coordinates.

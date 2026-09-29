@@ -127,10 +127,12 @@ export function createServices(world) {
 
   const photoFiles = { Q9188: 'Empire State Building (aerial view).jpg', Q11274: 'Chrysler Building by David Shankbone.jpg', Q12495: 'Burj Khalifa.jpg' };
 
-  function wikidata(entity) {
+  function wikidata(entity, property = 'P18') {
     stats.wiki++;
-    const file = photoFiles[entity];
-    return { claims: file ? { P18: [{ mainsnak: { snaktype: 'value', property: 'P18', datavalue: { value: file, type: 'string' }, datatype: 'commonsMedia' } }] } : {} };
+    let file = photoFiles[entity];
+    if (file && property === 'P3451') file = file.replace(/\.jpg$/i, ' at night.jpg'); // every landmark has a night view here
+    else if (property !== 'P18') file = null;
+    return { claims: file ? { [property]: [{ mainsnak: { snaktype: 'value', property, datavalue: { value: file, type: 'string' }, datatype: 'commonsMedia' } }] } : {} };
   }
 
   function photoSvg(name) {

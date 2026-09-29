@@ -3713,3 +3713,114 @@ textarea.field-input {
     align-self: center;
   }
 }
+
+/* ==========================================================================
+   v3 — real sun: night imagery, window glow, photo bloom
+   ========================================================================== */
+
+.sat--dusk img {
+  filter: brightness(0.72) saturate(0.85) sepia(0.25) hue-rotate(-12deg);
+}
+.sat--night img {
+  filter: brightness(0.36) saturate(0.55) contrast(1.15) hue-rotate(195deg) sepia(0.18) hue-rotate(-195deg);
+}
+.sat--night::after,
+.sat--dusk::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 50%, transparent 40%, rgba(2, 4, 14, 0.55));
+}
+.sat--night::after {
+  background: linear-gradient(rgba(8, 14, 42, 0.42), rgba(8, 14, 42, 0.42)), radial-gradient(120% 90% at 50% 50%, transparent 40%, rgba(2, 4, 14, 0.6));
+  mix-blend-mode: multiply;
+}
+.sat-lights,
+.sat-lights svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.sat-lights circle {
+  animation: window-flicker 5s ease-in-out infinite alternate;
+}
+.sat-lights circle:nth-child(3n) {
+  animation-duration: 7s;
+}
+.sat-lights circle:nth-child(5n) {
+  animation-duration: 3.5s;
+}
+@keyframes window-flicker {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.photo {
+  position: relative;
+}
+.photo img.photo-bloom {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  filter: brightness(1.7) contrast(2.6) saturate(1.4) blur(7px);
+  mix-blend-mode: screen;
+}
+.photo img.photo-bloom.loaded,
+.photo--night img.photo-bloom {
+  opacity: 0.5;
+}
+.photo--graded img {
+  filter: brightness(0.5) saturate(0.7) contrast(1.1);
+}
+
+.sun-chip {
+  position: absolute;
+  z-index: 3;
+  top: 44px;
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.sun-chip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ffd166;
+  box-shadow: 0 0 10px #ffd166;
+}
+.sun-chip--dusk i {
+  background: #ff8a3d;
+  box-shadow: 0 0 10px #ff8a3d;
+}
+.sun-chip--night i {
+  background: #cfe3ff;
+  box-shadow: 0 0 10px #9fc2ff;
+}
+.op-coin label.grow {
+  flex: 1;
+  min-width: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sat-lights circle {
+    animation: none;
+  }
+}

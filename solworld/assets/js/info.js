@@ -2,7 +2,7 @@
 // and the SOL/USD price. Every lookup degrades gracefully: the panel still
 // works if any of these services is unreachable.
 
-import { bboxOf, lngLatToWorldPx } from './geo.js';
+import { bboxOf, lngLatToWorldPx, pointInPolygon, polygonAreaM2 } from './geo.js';
 import { buildingHeights } from './osm.js';
 import { fetchJson, h, titleCase } from './util.js';
 
@@ -132,10 +132,11 @@ export function buildingFacts(building, tileHeight) {
 const COMMONS_HOSTS = /^https:\/\/(upload\.wikimedia\.org|commons\.wikimedia\.org)\//;
 
 export class PhotoFinder {
-  constructor({ wikipedia, wikidata, commonsFile }) {
+  constructor({ wikipedia, wikidata, commonsFile, commonsApi }) {
     this.wikipedia = wikipedia;
     this.wikidata = wikidata;
     this.commonsFile = commonsFile;
+    this.commonsApi = commonsApi;
     this.cache = new Map();
   }
 
@@ -144,9 +145,46 @@ export class PhotoFinder {
     return `${this.commonsFile}${encodeURIComponent(name)}?width=${width}`;
   }
 
-  find({ key, tags = {}, center }) {
-    if (!this.cache.has(key)) this.cache.set(key, this._find(tags, center).catch(() => null));
-    return this.cache.get(key);
+  /**
+   * Best photo of a building. With `night`, a night-time photo is preferred
+   * (Wikidata "nighttime view", then a Wikimedia Commons search), so what you
+   * see matches the time of day there. Photos come back with `night: bool`.
+   */
+  find({ key, tags = {}, center, night = false }) {
+    const id = `${key}:${night ? 'n' : 'd'}`;
+    if (!this.cache.has(id)) this.cache.set(id, (night ? this._findNight(tags).then((p) => p || this._find(tags, center)) : this._find(tags, center)).catch(() => null));
+    return this.cache.get(id);
+  }
+
+  async _claim(qid, property) {
+    const json = await fetchJson(`${this.wikidata}?action=wbgetclaims&entity=${qid}&property=${property}&format=json&origin=*`, { timeoutMs: 8000 });
+    return json.claims?.[property]?.[0]?.mainsnak?.datavalue?.value || null;
+  }
+
+  async _findNight(tags) {
+    if (/^Q\d+$/.test(tags.wikidata || '')) {
+      try {
+        const file = await this._claim(tags.wikidata, 'P3451'); // Wikidata "nighttime view"
+        if (file) return { url: this.commonsUrl(file), credit: 'Wikimedia Commons', exact: true, night: true, link: `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(file.replace(/ /g, '_'))}` };
+      } catch {
+        // try a search next
+      }
+    }
+    // Only well-known buildings: a name search is reliable for landmarks, not for "Main Street 12".
+    const name = tags['name:en'] || tags.name;
+    if (!name || !(tags.wikidata || tags.wikipedia) || !this.commonsApi) return null;
+    const q = encodeURIComponent(`"${name}" night`);
+    const json = await fetchJson(
+      `${this.commonsApi}?action=query&format=json&origin=*&generator=search&gsrnamespace=6&gsrlimit=8&gsrsearch=${q}&prop=imageinfo&iiprop=url%7Csize%7Cmime&iiurlwidth=960`,
+      { timeoutMs: 8000 },
+    );
+    const files = Object.values(json.query?.pages || {})
+      .map((p) => ({ p, info: p.imageinfo?.[0] }))
+      .filter(({ p, info }) => info?.thumburl && /jpe?g/i.test(info.mime || '') && /night|nacht|noche|nuit|notte|evening|dusk|lights|illuminat/i.test(p.title))
+      .sort((a, b) => (a.p.index ?? 99) - (b.p.index ?? 99));
+    const pick = files.find(({ info }) => info.width >= info.height) || files[0];
+    if (!pick) return null;
+    return { url: pick.info.thumburl, credit: 'Wikimedia Commons', exact: true, night: true, title: pick.p.title.replace(/^File:/, ''), link: pick.info.descriptionurl };
   }
 
   async _find(tags, center) {
@@ -217,7 +255,7 @@ export class PhotoFinder {
  * A satellite close-up of one building: imagery tiles stitched into a frame,
  * with the footprint traced on top. Pure DOM (no second WebGL context).
  */
-export function satelliteView({ template, maxZoom = 19, polygons, width, height, attribution }) {
+export function satelliteView({ template, maxZoom = 19, polygons, width, height, attribution, phase = 'day' }) {
   const dpr = Math.min(2, globalThis.devicePixelRatio || 1);
   const all = polygons.flat();
   const [w, s, e, n] = bboxOf(all);
@@ -288,6 +326,34 @@ export function satelliteView({ template, maxZoom = 19, polygons, width, height,
     </svg>`,
   });
   pan.append(svg);
+
+  // After dark: the imagery is graded to night and lit windows glow on the roof
+  // (a soft overlay scattered over the building, denser on bigger buildings).
+  if (phase !== 'day') {
+    frame.classList.add(`sat--${phase}`);
+    let seed = Math.round(Math.abs(w * 1e5 + n * 1e5)) % 2147483647 || 7;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const area = polygons.reduce((a, p) => a + polygonAreaM2(p), 0);
+    const want = Math.min(46, Math.max(6, Math.round(Math.sqrt(area) / 2.2)));
+    const dots = [];
+    for (let tries = 0; dots.length < want && tries < want * 30; tries++) {
+      const pt = [w + (e - w) * rnd(), s + (n - s) * rnd()];
+      if (!polygons.some((p) => pointInPolygon(pt, p))) continue;
+      const [x, y] = toSvg(pt).split(',').map(Number);
+      const warm = rnd() < 0.78;
+      dots.push(`<circle cx="${x}" cy="${y}" r="${(1.6 + rnd() * 2.4).toFixed(1)}" fill="${warm ? '#ffcf8a' : '#cfe3ff'}" opacity="${(0.55 + rnd() * 0.45).toFixed(2)}"/>`);
+    }
+    pan.append(
+      h('div', {
+        class: 'sat-lights',
+        svg: `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs><filter id="winglow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2.6"/></filter></defs>
+          <g filter="url(#winglow)" opacity="${phase === 'night' ? 1 : 0.55}">${dots.join('')}</g>
+          <g opacity="${phase === 'night' ? 0.9 : 0.45}">${dots.join('').replace(/r="([\d.]+)"/g, (m, r) => `r="${(r / 3).toFixed(2)}"`)}</g>
+        </svg>`,
+      }),
+    );
+  }
   frame.append(
     h('div', { class: 'sat-hud', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'), h('i')),
     h('div', { class: 'sat-empty' }, 'Satellite imagery unavailable here'),

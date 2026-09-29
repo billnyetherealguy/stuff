@@ -2,6 +2,7 @@
 // buy / claim flow. Rendering only — app.js decides what to show.
 
 import { buildingFacts, buildingTitle, satelliteView } from '../info.js';
+import { PHASE_LABELS, sunPosition } from '../sun.js';
 import { SIGN_COLORS } from '../registry.js';
 import { placeLabel } from '../cities.js';
 import { avatar, copyText, fmtCoord, fmtInt, fmtSol, fmtUsd, h, shortAddr, timeAgo } from '../util.js';
@@ -223,23 +224,31 @@ export class BuildingPanel {
     const [lng, lat] = s.center;
     this.streetLink.href = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat.toFixed(6)},${lng.toFixed(6)}`;
 
+    // What time of day is it at the building right now?
+    const sun = sunPosition(lng, lat);
     let node;
     if (tab === 'photo' && s.photo) {
       const img = h('img', { src: s.photo.url, alt: s.photo.title || 'Photo of the building', referrerpolicy: 'no-referrer', decoding: 'async' });
+      // Night photos get a bloom: a blurred, brightened copy screened on top, so
+      // the lit windows in the photo glow softly.
+      const bloom = s.photo.night ? h('img', { class: 'photo-bloom', src: s.photo.url, alt: '', 'aria-hidden': 'true', referrerpolicy: 'no-referrer', decoding: 'async' }) : null;
       img.addEventListener('load', () => img.classList.add('loaded'), { once: true });
       img.addEventListener('error', () => {
         s.photo = null;
         s.tab = 'satellite';
         this.renderMedia();
       });
+      const mismatch = !s.photo.night && sun.phase === 'night';
       node = h(
         'figure',
-        { class: 'photo' },
+        { class: `photo${s.photo.night ? ' photo--night' : ''}${mismatch ? ' photo--graded' : ''}` },
         img,
+        bloom,
         h(
           'figcaption',
           null,
           s.photo.exact ? '' : h('span', { class: 'photo-near' }, 'Nearby · ', s.photo.title || ''),
+          mismatch ? h('span', { class: 'photo-near' }, 'Daytime photo · ') : null,
           h('a', { href: s.photo.link, target: '_blank', rel: 'noopener' }, s.photo.credit),
         ),
       );
@@ -251,9 +260,11 @@ export class BuildingPanel {
         width: 400,
         height: 250,
         attribution: map.satelliteAttribution,
+        phase: sun.phase,
       });
       node.classList.add(`sat--${this.tone()}`);
     }
+    node.append(h('span', { class: `sun-chip sun-chip--${sun.phase}`, title: `Sun ${Math.round(sun.altitude)}° above the horizon there` }, h('i'), `${PHASE_LABELS[sun.phase]} there now`));
     for (const old of [...this.mediaStage.children]) {
       if (old.classList.contains('media-leave')) continue;
       old.classList.add('media-leave');
@@ -477,9 +488,18 @@ export class BuildingPanel {
             h('div', { class: 'price-factors' }, quote.factors.length ? quote.factors.map((f) => h('span', { class: 'chip chip--xs', title: `×${f.x.toFixed(1)}` }, f.label)) : h('span', { class: 'chip chip--xs' }, 'Quiet spot')),
           ),
         );
+        const coin = settings.memecoinView;
+        const holdersButton = () =>
+          coin && !(wallet.exists && this.ctx.linkedHolder())
+            ? h('button', { class: 'btn btn--accent btn--block', onclick: () => this.ctx.onHolder() }, h('span', { svg: icon('gift', { size: 16 }) }), `Buy with my $${coin.symbol} holdings`)
+            : null;
         if (!wallet.exists) {
-          nodes.push(h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onConnect() }, h('span', { svg: icon('wallet', { size: 16 }) }), 'Get a wallet to own this'));
+          nodes.push(h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onConnect() }, h('span', { svg: icon('wallet', { size: 16 }) }), 'Get a wallet to own this'), holdersButton());
         } else {
+          nodes.push(holdersButton());
+          if (coin && this.ctx.linkedHolder() && this.ctx.creditLeft() < quote.lamports) {
+            nodes.push(h('p', { class: 'foot-note' }, `Your $${coin.symbol} credit: ${fmtSol(this.ctx.creditLeft())} SOL — not enough for this one.`));
+          }
           const need = quote.lamports + 20_000 - (wallet.balance ?? 0);
           const credit = this.ctx.creditLeft();
           if (credit >= quote.lamports) {

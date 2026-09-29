@@ -20,11 +20,12 @@ import { WalletManager, isUserRejection } from './wallet.js';
 import { BurnerWallet, verifySignature } from './burner.js';
 import { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } from './market.js';
 import { priceBuilding } from './pricing.js';
+import { sunPosition } from './sun.js';
 import { OsmClient, buildingHeights } from './osm.js';
 import { Geocoder, PhotoFinder, SolPrice, buildingKind, buildingTitle } from './info.js';
 import { MapController, COLORS } from './map.js';
 import { FEATURED, placeLabel } from './cities.js';
-import { distanceM, pointInPolygon } from './geo.js';
+import { distanceM, pointInPolygon, polygonAreaM2 } from './geo.js';
 import { $, avatar, copyText, debounce, fmtInt, fmtSol, h, isTouch, prefersReducedMotion, shortAddr, storage } from './util.js';
 import { Toasts } from './ui/feedback.js';
 import { BuildingPanel } from './ui/panel.js';
@@ -72,7 +73,6 @@ async function boot() {
     });
   }
   const live = settings.live;
-  settings.memecoinView = live ? settings.memecoin : DEMO_COIN;
 
   const reduced = prefersReducedMotion();
   const loader = createLoader($('#loader'));
@@ -87,6 +87,8 @@ async function boot() {
     ? new ChainRegistry({ rpc, treasury: settings.treasury, cluster: settings.cluster, rules: settings.rules, storage, pollMs: settings.pollMs })
     : new DemoRegistry({ rules: { ...settings.rules, memecoin: DEMO_COIN }, storage, seeds: () => demoSeeds(osm) });
   const treasury = live ? settings.treasury : DEMO_TREASURY;
+  // The active meme coin (config.js, or whatever the operator set on-chain).
+  Object.defineProperty(settings, 'memecoinView', { get: () => registry.state.coin || null, configurable: true });
   const ext = new WalletManager({ cluster: settings.cluster, rpc, storage: null });
   const wallet = new BurnerWallet({ rpc, storage });
   if (!live) wallet.simulate(storage);
@@ -112,7 +114,7 @@ async function boot() {
   const linkedHolder = () => (wallet.address ? registry.state.links.get(wallet.address) || null : null);
   const creditLeft = () => {
     const holder = linkedHolder();
-    const coin = registry.rules.memecoin;
+    const coin = registry.state.coin;
     if (!holder || !coin || holderInfo?.holder !== holder) return 0;
     const value = holderInfo.tokens * tokenPriceAt(coin.prices, Math.floor(Date.now() / 1000));
     return Math.max(0, Math.floor(value - (registry.state.holderSpent.get(holder) || 0)));
@@ -165,6 +167,12 @@ async function boot() {
     onRefund: (v, btn) => operatorAction('refund', v.sig, v.paid - (registry.state.refunded.get(v.sig) || 0), v.buyer || v.actor, btn),
     onRevoke: (sig, lamports, to, btn) => operatorAction('revoke', sig, lamports, to, btn),
     onAudit: (box, btn) => audit(box, btn),
+    onSetCoin: (coin, btn) => setCoin(coin, btn),
+    coinMarket: (mint) => coinMarket(mint),
+    onHolder: async () => {
+      if (!wallet.exists && !(await walletUI.open())) return;
+      walletUI.holder();
+    },
   };
 
   /* ------------------------------------------------------------- UI */
@@ -296,17 +304,38 @@ async function boot() {
     return rec.owner === wallet.address ? 'mine' : 'owned';
   }
 
-  async function selectPick(pick) {
+  async function selectPick(pick, { retry = 1 } = {}) {
     const seq = ++selectSeq;
     hero.hide();
     mapc.stopOrbit();
     current = null;
+    // Instant answer from memory (buildings around the view are prefetched).
+    const cached = osm.cachedAt(pick.point);
+    if (cached) return showBuilding(cached, { tileTop: pick.top });
+    // The map tile often knows the exact OSM building already: show it right
+    // away and fill in the details (name, photo, fame) in the background.
+    if (pick.tileKey && !osm.byKey.has(pick.tileKey)) {
+      const provisional = { key: pick.tileKey, tags: {}, polygons: [pick.part], center: pick.point, area: polygonAreaM2(pick.part), provisional: true };
+      showBuilding(provisional, { tileTop: pick.top });
+      provisional.hydrate = osm
+        .buildingsByKeys([pick.tileKey])
+        .then((found) => {
+          const full = found.get(pick.tileKey);
+          if (full && seq === selectSeq && current?.key === full.key) {
+            priceCache.delete(full.key);
+            showBuilding(full, { tileTop: pick.top, fly: false });
+          }
+          return full || null;
+        })
+        .catch(() => null);
+      return;
+    }
     panel.showPending(pick);
     updatePadding();
     updateHint();
     mapc.setSelection({ key: null, polygons: null, anchor: pick.point, fallback: { part: pick.part, top: pick.top, base: pick.base }, tone: '' });
     try {
-      const building = await osm.buildingAt(pick.point, pick.part);
+      const building = pick.tileKey ? osm.byKey.get(pick.tileKey) : await osm.buildingAt(pick.point, pick.part);
       if (seq !== selectSeq) return;
       if (!building) {
         panel.showError('not-building');
@@ -315,6 +344,7 @@ async function boot() {
       showBuilding(building, { tileTop: pick.top });
     } catch (err) {
       if (seq !== selectSeq) return;
+      if (retry > 0) return selectPick(pick, { retry: retry - 1 });
       console.warn('[solworld] building lookup failed', err);
       panel.showError('network', () => selectPick(pick));
     }
@@ -334,7 +364,9 @@ async function boot() {
       if (!reduced) mapc.startOrbit();
     }
     geocoder.reverse(building.center).then((address) => panel.setAddress(building.key, address));
-    photos.find({ key: building.key, tags: building.tags, center: building.center }).then((photo) => panel.setPhoto(building.key, photo));
+    // Photos match the time of day at the building: night photos after dark.
+    const night = sunPosition(building.center[0], building.center[1]).phase !== 'day';
+    photos.find({ key: building.key, tags: building.tags, center: building.center, night }).then((photo) => panel.setPhoto(building.key, photo));
     solPrice.get().then((usd) => usd && panel.setUsd(usd));
   }
 
@@ -453,6 +485,11 @@ async function boot() {
 
   async function acquire(kind) {
     if (!current) return;
+    if (current.building.provisional) {
+      // Price depends on the full OSM details; wait for them.
+      await current.building.hydrate;
+      if (!current || current.building.provisional) return void toast({ title: 'Still loading this building', body: 'Try again in a moment.', tone: 'info' });
+    }
     const { building } = current;
     const { key } = building;
     if (!(await ensureWallet())) return;
@@ -634,7 +671,7 @@ async function boot() {
   }
 
   async function holderTokens(address) {
-    const coin = registry.rules.memecoin;
+    const coin = registry.state.coin;
     if (!coin) throw new Error('No meme coin is set up yet.');
     if (!live) return { tokens: DEMO_HOLDINGS, account: null };
     const accounts = await rpc.getTokenAccountsByOwner(address, coin.mint);
@@ -657,7 +694,7 @@ async function boot() {
   }
 
   async function holderPreview(address) {
-    const coin = registry.rules.memecoin;
+    const coin = registry.state.coin;
     const { tokens } = await holderTokens(address);
     const value = Math.floor(tokens * tokenPriceAt(coin.prices, Math.floor(Date.now() / 1000)));
     return { tokens, value, left: Math.max(0, value - (registry.state.holderSpent.get(address) || 0)) };
@@ -735,6 +772,52 @@ async function boot() {
       btn?.removeAttribute('disabled');
       progress.update({ tone: isUserRejection(err) ? 'info' : 'error', title: isUserRejection(err) ? 'Cancelled' : 'Failed', body: isUserRejection(err) ? '' : friendlyError(err) });
     }
+  }
+
+  /** Operator: publish the meme coin (mint, ticker, SOL per token) on-chain. */
+  async function setCoin({ mint, symbol, sol }, btn) {
+    const memo = buildMemo('coin', { mint, symbol, lamportsPerToken: sol * 1e9 });
+    if (!parseMemo(memo)) return void toast({ title: 'Check the coin details', body: 'Mint must be a Solana address, ticker 1–12 letters/numbers, price a positive number.', tone: 'error' });
+    if (!live) {
+      await registry.submit({ ...parseMemo(memo), signers: [DEMO_TREASURY], transfers: [{ s: DEMO_TREASURY, d: DEMO_TREASURY, l: 0 }], tokens: [] });
+      toast({ title: `$${symbol} is live (demo)`, body: 'Holders can now use it as building credit.', tone: 'success' });
+      return true;
+    }
+    if (!(await ensureTreasuryWallet())) return false;
+    btn?.setAttribute('disabled', '');
+    const progress = toast({ title: 'Saving your coin', body: 'Approve in your treasury wallet (no SOL is moved).', tone: 'pending' });
+    try {
+      const { blockhash } = await rpc.getLatestBlockhash();
+      const message = compileMessage({
+        payer: settings.treasury,
+        recentBlockhash: blockhash,
+        instructions: [transferInstruction({ from: settings.treasury, to: settings.treasury, lamports: 0, references: [registry.address] }), memoInstruction(memo)],
+      });
+      const sig = await ext.signAndSend(serializeUnsignedTransaction(message));
+      await rpc.confirm(sig);
+      await registry.waitFor(sig);
+      progress.update({ tone: 'success', title: `$${symbol} is live`, body: 'Holders can now use it as building credit.', link: { href: settings.explorer.tx(sig), label: 'View transaction' } });
+      walletUI.render();
+      panel.refresh();
+      return true;
+    } catch (err) {
+      progress.update({ tone: isUserRejection(err) ? 'info' : 'error', title: isUserRejection(err) ? 'Cancelled' : 'Failed', body: isUserRejection(err) ? '' : friendlyError(err) });
+      return false;
+    } finally {
+      btn?.removeAttribute('disabled');
+    }
+  }
+
+  /** Current market price of a token in SOL (DexScreener), to prefill the operator form. */
+  async function coinMarket(mint) {
+    const res = await fetch(`${settings.services.dexscreener}${encodeURIComponent(mint)}`);
+    if (!res.ok) throw new Error('Price lookup failed');
+    const json = await res.json();
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const pairs = (json.pairs || []).filter((p) => p.baseToken?.address === mint && p.quoteToken?.address === SOL_MINT && Number(p.priceNative) > 0);
+    pairs.sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+    if (!pairs.length) throw new Error('No SOL trading pair found for this token yet.');
+    return { sol: Number(pairs[0].priceNative), symbol: pairs[0].baseToken.symbol, liquidityUsd: pairs[0].liquidity?.usd || 0 };
   }
 
   async function audit(box, btn) {
@@ -841,6 +924,13 @@ async function boot() {
     }
   }
   const scheduleOutlines = debounce(() => prefetchOutlines(mapc.visibleRecords().slice(0, 120)), 650);
+  // Load the buildings around the view in the background so taps are instant.
+  const prefetchView = debounce(() => {
+    const z = mapc.zoom;
+    if (z < 15.2 || mapc.map.isMoving()) return;
+    osm.prefetchArea(mapc.center, z >= 17 ? 220 : z >= 16 ? 320 : 450);
+  }, 700);
+  mapc.map.on('moveend', prefetchView);
   mapc.map.on('moveend', scheduleOutlines);
 
   /* --------------------------------------------------------- wiring */

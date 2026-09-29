@@ -281,8 +281,10 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
       if (url.pathname.startsWith('/reverse')) return json(route, services.photonReverse(+url.searchParams.get('lon'), +url.searchParams.get('lat')));
       return json(route, services.photonSearch(url.searchParams.get('q') || ''));
     }
-    if (host === 'www.wikidata.org') return json(route, services.wikidata(url.searchParams.get('entity')));
+    if (host === 'www.wikidata.org') return json(route, services.wikidata(url.searchParams.get('entity'), url.searchParams.get('property') || 'P18'));
     if (host.endsWith('wikipedia.org')) return json(route, { batchcomplete: '', query: { pages: {} } });
+    if (host === 'commons.wikimedia.org' && url.pathname === '/w/api.php') return json(route, { batchcomplete: '', query: { pages: {} } });
+    if (host === 'api.dexscreener.com') return json(route, { pairs: [] });
     if (host === 'commons.wikimedia.org') {
       const name = url.pathname.split('/').pop();
       return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: services.photoSvg(name) });

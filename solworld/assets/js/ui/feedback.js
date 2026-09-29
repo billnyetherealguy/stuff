@@ -11,7 +11,7 @@ export class Toasts {
    * Shows a toast and returns a handle to update or dismiss it.
    * tone: 'info' | 'success' | 'error' | 'pending' | 'mine' | 'owned'
    */
-  show({ title, body, tone = 'info', link, duration = 5200, iconName } = {}) {
+  show({ title, body, tone = 'info', link, duration = 5200, iconName, action } = {}) {
     const glyph = iconName || { success: 'check', error: 'alert', pending: 'clock', mine: 'sparkle', owned: 'building' }[tone] || 'info';
     const titleEl = h('div', { class: 'toast-title' }, title);
     const bodyEl = h('div', { class: 'toast-body' }, body || '');
@@ -39,6 +39,17 @@ export class Toasts {
       setTimeout(() => el.remove(), 320);
     };
     setLink(link);
+    if (action) {
+      linkEl.after(
+        h('button', {
+          class: 'toast-action',
+          onclick: () => {
+            dismiss();
+            action.onClick();
+          },
+        }, action.label),
+      );
+    }
     this.root.append(el);
     while (this.root.children.length > 4) this.root.firstElementChild.remove();
     arm(tone === 'pending' ? 0 : duration);

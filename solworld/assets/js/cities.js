@@ -66,6 +66,31 @@ const CITIES = [
   ['Wellington', 'NZ', -41.2865, 174.7762],
 ];
 
+// Global hubs weigh more when pricing ("busier places are worth more").
+const HUBS = new Set([
+  'New York', 'Los Angeles', 'San Francisco', 'Chicago', 'Miami', 'Las Vegas', 'Toronto', 'London', 'Paris', 'Monaco',
+  'Dubai', 'Abu Dhabi', 'Doha', 'Singapore', 'Hong Kong', 'Shanghai', 'Beijing', 'Shenzhen', 'Tokyo', 'Osaka', 'Seoul',
+  'Sydney', 'Mumbai', 'Moscow', 'Istanbul', 'Rome', 'Milan', 'Madrid', 'Barcelona', 'Berlin', 'Amsterdam', 'Zurich',
+  'São Paulo', 'Mexico City', 'Buenos Aires', 'Bangkok', 'Taipei', 'Kuala Lumpur', 'Riyadh', 'Tel Aviv', 'Venice',
+]);
+
+/**
+ * How busy a spot is: 1 in the countryside, rising towards city centers
+ * (roughly 40 in the heart of a global hub, 20 in other big cities).
+ * Returns { factor, city }.
+ */
+export function busyness(lat, lng) {
+  let best = { factor: 1, city: null };
+  for (const [name, , clat, clng] of CITIES) {
+    if (Math.abs(clat - lat) > 1.5 || Math.abs(clng - lng) > 2) continue;
+    const km = distanceM([lng, lat], [clng, clat]) / 1000;
+    const weight = HUBS.has(name) ? 3 : 1.5;
+    const factor = 1 + weight * 12 * Math.exp(-km / 3) + weight * 2 * Math.exp(-km / 25);
+    if (factor > best.factor) best = { factor, city: name, km };
+  }
+  return best;
+}
+
 /** Nearest known city within `maxKm`, e.g. { name: 'Tokyo', cc: 'JP', km: 3.2 }. */
 export function nearestCity(lat, lng, maxKm = 80) {
   let best = null;

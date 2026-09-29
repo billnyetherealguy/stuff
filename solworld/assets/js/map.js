@@ -4,6 +4,8 @@
 import * as maplibregl from '../../vendor/maplibre-6.11.2/maplibre-gl.mjs';
 import { Emitter } from './emitter.js';
 import { buildStyle } from './mapstyle.js';
+import { FACADE_IDS, facadeImage } from './facade.js';
+import { SIGN_COLORS } from './registry.js';
 import {
   inflatePolygon,
   interiorPoint,
@@ -84,6 +86,10 @@ export class MapController extends Emitter {
       }
     });
 
+    // Facade patterns are drawn on demand, the first time a tile needs one.
+    this.map.setMissingStyleImageResolver(async (id) => {
+      if (FACADE_IDS.includes(id) && !this.map.hasImage(id)) this.map.addImage(id, facadeImage(id), { pixelRatio: 4 });
+    });
     this.map.on('load', () => this._onLoad());
     this.map.once('idle', () => this.emit('first-idle'));
     this._wireInteraction();
@@ -128,7 +134,8 @@ export class MapController extends Emitter {
         labelsFrom,
       );
     shell('sw-shell-hover', ['==', ['get', 'kind'], 'hover'], 0.75);
-    shell('sw-shell-owned', ['match', ['get', 'kind'], ['mine', 'owned'], true, false], 0.9);
+    // Up close the tint turns translucent so the owned building's facade shows through.
+    shell('sw-shell-owned', ['match', ['get', 'kind'], ['mine', 'owned'], true, false], ['interpolate', ['linear'], ['zoom'], 15.8, 0.9, 16.6, 0.5]);
     shell('sw-shell-selected', ['==', ['get', 'kind'], 'selected'], 0.97);
 
     m.addLayer(
@@ -177,6 +184,32 @@ export class MapController extends Emitter {
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 0, 1.8, 8, 2.4, 14, 3.2],
         'circle-opacity': ['interpolate', ['linear'], ['zoom'], 0, 1, 14.6, 1, 15.4, 0],
         'circle-pitch-alignment': 'map',
+      },
+    });
+    // Owners' billboards: glowing text above their building for everyone to see.
+    m.addLayer({
+      id: 'sw-signs',
+      type: 'symbol',
+      source: 'sw-points',
+      minzoom: 9,
+      filter: ['!=', ['get', 'sign'], ''],
+      layout: {
+        'text-field': ['get', 'sign'],
+        'text-font': ['Noto Sans Bold'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 9, 10, 14, 13, 18, 18],
+        'text-max-width': 11,
+        'text-anchor': 'bottom',
+        'text-offset': [0, -0.9],
+        'text-letter-spacing': 0.02,
+        'text-padding': 4,
+        'symbol-sort-key': ['-', 0, ['get', 'price']],
+      },
+      paint: {
+        'text-color': ['get', 'signColor'],
+        'text-halo-color': 'rgba(0, 0, 0, 0.88)',
+        'text-halo-width': 1.8,
+        'text-halo-blur': 0.6,
+        'text-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0, 10, 1],
       },
     });
     m.addLayer({
@@ -266,7 +299,7 @@ export class MapController extends Emitter {
   /** The single building footprint under a screen point, or null. */
   pickAt(point, lngLat) {
     if (!this.ready || this.map.getZoom() < BUILDING_MIN_ZOOM) return null;
-    let feature = this.map.queryRenderedFeatures(point, { layers: ['building-3d'] })[0];
+    let feature = this.map.queryRenderedFeatures(point, { layers: ['building-facade', 'building-3d'] })[0];
     if (!feature) feature = this.map.queryRenderedFeatures(point, { layers: ['building-pick'] })[0];
     if (!feature) return null;
     const parts = polygonsOf(feature.geometry);
@@ -339,7 +372,13 @@ export class MapController extends Emitter {
       features: this.records.map((r) => ({
         type: 'Feature',
         geometry: { type: 'Point', coordinates: [r.lng, r.lat] },
-        properties: { key: r.key, mine: r.owner === this.me },
+        properties: {
+          key: r.key,
+          mine: r.owner === this.me,
+          sign: r.sign?.text || '',
+          signColor: SIGN_COLORS[r.sign?.color] || SIGN_COLORS[0],
+          price: r.price || 0,
+        },
       })),
     });
   }

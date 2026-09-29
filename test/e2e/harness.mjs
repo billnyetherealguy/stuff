@@ -2,6 +2,7 @@
 // local fakes (same URLs the production config uses), and installs a Wallet
 // Standard wallet whose keys live in Node.
 import http from 'node:http';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,7 +69,7 @@ function walletInit(icon) {
         version: '1.0.0',
         connect: async () => {
           const a = await window.__harnessAccount();
-          accounts.splice(0, accounts.length, { address: a.address, publicKey: new Uint8Array(a.publicKey), chains, features: ['solana:signAndSendTransaction'] });
+          accounts.splice(0, accounts.length, { address: a.address, publicKey: new Uint8Array(a.publicKey), chains, features: ['solana:signAndSendTransaction', 'solana:signTransaction'] });
           emit();
           return { accounts: [...accounts] };
         },
@@ -86,6 +87,18 @@ function walletInit(icon) {
           listeners.add(listener);
           return () => listeners.delete(listener);
         },
+      },
+      'solana:signTransaction': {
+        version: '1.0.0',
+        supportedTransactionVersions: ['legacy', 0],
+        signTransaction: async (...inputs) =>
+          Promise.all(
+            inputs.map(async (input) => {
+              const result = await window.__harnessSign(Array.from(input.transaction));
+              if (result.error) throw Object.assign(new Error(result.error), { code: result.code });
+              return { signedTransaction: new Uint8Array(result.bytes) };
+            }),
+          ),
       },
       'solana:signAndSendTransaction': {
         version: '1.0.0',
@@ -106,6 +119,71 @@ function walletInit(icon) {
     window.dispatchEvent(new CustomEvent('wallet-standard:register-wallet', { detail: callback }));
   } catch {}
   window.addEventListener('wallet-standard:app-ready', ({ detail: api }) => callback(api));
+}
+
+// Signs a legacy wire transaction in place for `keypair` (its slot is found in the account keys).
+function readLen(bytes, at) {
+  let len = 0;
+  let shift = 0;
+  let i = at;
+  for (;;) {
+    const b = bytes[i++];
+    len |= (b & 0x7f) << shift;
+    if (!(b & 0x80)) return [len, i];
+    shift += 7;
+  }
+}
+function signInPlace(wire, keypair) {
+  const [sigCount, sigStart] = readLen(wire, 0);
+  const msgStart = sigStart + sigCount * 64;
+  const message = wire.subarray(msgStart);
+  const [keyCount, keysStart] = readLen(message, 3);
+  const me = Buffer.from(keypair.publicKey);
+  for (let k = 0; k < Math.min(keyCount, sigCount); k++) {
+    if (Buffer.from(message.subarray(keysStart + k * 32, keysStart + (k + 1) * 32)).equals(me)) {
+      wire.set(nacl.sign.detached(message, keypair.secretKey), sigStart + k * 64);
+      return wire;
+    }
+  }
+  throw new Error('This wallet is not a signer of the transaction.');
+}
+
+// A small, dim "satellite" tile: textured ground with a tile-dependent tint.
+const pngCache = new Map();
+function groundPng(z, y, x) {
+  const id = `${(x * 7 + y * 13) % 5}`;
+  if (pngCache.has(id)) return pngCache.get(id);
+  const size = 64;
+  const raw = Buffer.alloc((size * 3 + 1) * size);
+  let seed = 1 + Number(id) * 7919;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let row = 0; row < size; row++) {
+    raw[row * (size * 3 + 1)] = 0;
+    for (let col = 0; col < size; col++) {
+      const n = rnd() * 40;
+      const tree = (row * 3 + col * 5 + Number(id)) % 23 < 4;
+      const o = row * (size * 3 + 1) + 1 + col * 3;
+      raw[o] = tree ? 40 + n / 2 : 90 + n;
+      raw[o + 1] = tree ? 70 + n / 2 : 92 + n;
+      raw[o + 2] = tree ? 40 + n / 2 : 84 + n;
+    }
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(td) >>> 0);
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+  pngCache.set(id, png);
+  return png;
 }
 
 /**
@@ -154,6 +232,13 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
       } catch (e) {
         return { error: e.message };
       }
+    });
+    await page.exposeFunction('__harnessSign', (bytes) => {
+      if (state.rejectNext) {
+        state.rejectNext = false;
+        return { error: 'User rejected the request.', code: 4001 };
+      }
+      return { bytes: Array.from(signInPlace(Uint8Array.from(bytes), state.keypair)) };
     });
     await page.addInitScript(walletInit, WALLET_ICON);
   }
@@ -204,7 +289,9 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
     }
     if (host === 'server.arcgisonline.com') {
       const e = /\/tile\/(\d+)\/(\d+)\/(\d+)$/.exec(url.pathname);
-      if (e) return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: services.esriTile(+e[1], +e[2], +e[3]) });
+      // <img> tiles (panel close-up) get the SVG render; the map's raster layer fetches PNGs.
+      if (e && req.resourceType() === 'image') return route.fulfill({ status: 200, contentType: 'image/svg+xml', body: services.esriTile(+e[1], +e[2], +e[3]) });
+      if (e) return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: groundPng(+e[1], +e[2], +e[3]) });
     }
     if (host === 'api.coingecko.com') return json(route, { solana: { usd: 187.42 } });
     if (host === 'fonts.googleapis.com' || host === 'fonts.gstatic.com') {

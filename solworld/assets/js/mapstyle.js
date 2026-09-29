@@ -1,6 +1,7 @@
 // Solworld's map style: a near-black, Tesla-inspired dark theme on the
-// OpenMapTiles schema (served free by OpenFreeMap). No imagery — just land,
-// water, roads, labels and extruded buildings.
+// OpenMapTiles schema (served free by OpenFreeMap): land, water, roads, labels
+// and extruded buildings. Close up, darkened satellite imagery fades in under
+// the streets and buildings switch to lit, windowed facades.
 
 export const PALETTE = {
   land: '#0b0c0f',
@@ -78,7 +79,9 @@ function cityLabel(id, rankFilter, minzoom) {
   };
 }
 
-export function buildStyle({ tiles, glyphs, attribution }) {
+export const CLOSE_UP_ZOOM = 16; // buildings switch to lit, windowed facades here
+
+export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMaxZoom = 19, satelliteAttribution }) {
   return {
     version: 8,
     name: 'Solworld Dark',
@@ -96,6 +99,7 @@ export function buildStyle({ tiles, glyphs, attribution }) {
     },
     sources: {
       omt: { type: 'vector', url: tiles, attribution },
+      ...(satellite ? { sat: { type: 'raster', tiles: [satellite], tileSize: 256, maxzoom: satelliteMaxZoom, attribution: satelliteAttribution } } : {}),
     },
     layers: [
       { id: 'land', type: 'background', paint: { 'background-color': P.land } },
@@ -186,6 +190,25 @@ export function buildStyle({ tiles, glyphs, attribution }) {
           'line-width': ['interpolate', ['exponential', 1.4], ['zoom'], 11, 1, 14, 8, 18, 60],
         },
       },
+
+      ...(satellite
+        ? [
+            {
+              // Real ground (trees, pools, courtyards) close up, darkened to the night palette.
+              id: 'satellite',
+              type: 'raster',
+              source: 'sat',
+              minzoom: 15.2,
+              paint: {
+                'raster-opacity': ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, 0.82],
+                'raster-brightness-max': 0.5,
+                'raster-saturation': -0.35,
+                'raster-contrast': 0.08,
+                'raster-fade-duration': 250,
+              },
+            },
+          ]
+        : []),
 
       {
         id: 'road-tunnel',
@@ -305,6 +328,7 @@ export function buildStyle({ tiles, glyphs, attribution }) {
         source: 'omt',
         'source-layer': 'building',
         minzoom: 14,
+        maxzoom: CLOSE_UP_ZOOM,
         filter: ['!=', ['get', 'hide_3d'], true],
         paint: {
           'fill-extrusion-color': [
@@ -321,6 +345,29 @@ export function buildStyle({ tiles, glyphs, attribution }) {
           'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 14.8, ['coalesce', ['get', 'render_height'], 5]],
           'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 14.8, ['coalesce', ['get', 'render_min_height'], 0]],
           'fill-extrusion-opacity': 0.94,
+          'fill-extrusion-vertical-gradient': true,
+        },
+      },
+      {
+        // Close up: the same buildings with lit windows (images from facade.js).
+        id: 'building-facade',
+        type: 'fill-extrusion',
+        source: 'omt',
+        'source-layer': 'building',
+        minzoom: CLOSE_UP_ZOOM,
+        filter: ['!=', ['get', 'hide_3d'], true],
+        paint: {
+          'fill-extrusion-pattern': [
+            'case',
+            ['>=', ['coalesce', ['get', 'render_height'], 5], 60],
+            ['match', ['%', ['floor', ['coalesce', ['get', 'render_height'], 5]], 2], 0, 'facade-2', 'facade-0'],
+            ['<', ['coalesce', ['get', 'render_height'], 5], 14],
+            'facade-1',
+            ['match', ['%', ['floor', ['coalesce', ['get', 'render_height'], 5]], 3], 0, 'facade-3', 1, 'facade-0', 'facade-1'],
+          ],
+          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 5],
+          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+          'fill-extrusion-opacity': 0.97,
           'fill-extrusion-vertical-gradient': true,
         },
       },

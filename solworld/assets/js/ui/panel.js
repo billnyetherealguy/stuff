@@ -2,12 +2,15 @@
 // buy / claim flow. Rendering only — app.js decides what to show.
 
 import { buildingFacts, buildingTitle, satelliteView } from '../info.js';
+import { SIGN_COLORS } from '../registry.js';
 import { placeLabel } from '../cities.js';
 import { avatar, copyText, fmtCoord, fmtInt, fmtSol, fmtUsd, h, shortAddr, timeAgo } from '../util.js';
 import { icon } from './icons.js';
 
 const STAGES = {
   preparing: 'Preparing transaction…',
+  nonce: 'Setting up offers for this building…',
+  signing: 'Signing…',
   wallet: 'Approve in your wallet…',
   sending: 'Sending to Solana…',
   confirming: 'Confirming on Solana…',
@@ -34,6 +37,7 @@ export class BuildingPanel {
     this.title = h('h2', { class: 'panel-title', id: 'panel-title' });
     this.sub = h('p', { class: 'panel-sub' });
     this.owner = h('div', { class: 'owner-card' });
+    this.market = h('div', { class: 'market' });
     this.facts = h('dl', { class: 'facts' });
     this.links = h('div', { class: 'panel-links' });
     this.foot = h('div', { class: 'panel-foot' });
@@ -58,6 +62,7 @@ export class BuildingPanel {
           this.title,
           this.sub,
           this.owner,
+          this.market,
           this.facts,
           this.links,
         ),
@@ -170,6 +175,7 @@ export class BuildingPanel {
   renderAll() {
     this.renderStatus();
     this.renderOwner();
+    this.renderMarket();
     this.renderFacts();
     this.renderLinks();
     this.renderFoot();
@@ -310,8 +316,13 @@ export class BuildingPanel {
     }
     const mine = rec.owner === wallet.address;
     const holder = registry.state.owners.get(rec.owner);
-    const acquired = rec.kind === 'claim' ? `Claimed free ${timeAgo(rec.time)}` : `Bought ${timeAgo(rec.time)} for ${fmtSol(rec.paid)} SOL`;
-    const txLink = rec.seed || String(rec.sig).startsWith('demo')
+    const acquired =
+      rec.acquired === 'hold'
+        ? `Taken with holder credit ${timeAgo(rec.time)} · ${fmtSol(rec.price)} SOL value`
+        : rec.acquired === 'sale'
+          ? `Bought from another owner ${timeAgo(rec.time)} for ${fmtSol(rec.price)} SOL`
+          : `Bought ${timeAgo(rec.time)} for ${fmtSol(rec.price)} SOL`;
+    const txLink = rec.seed || !settings.live
       ? null
       : h('a', { class: 'owner-tx', href: settings.explorer.tx(rec.sig), target: '_blank', rel: 'noopener', title: 'View transaction' }, 'Tx', h('span', { svg: icon('external', { size: 12 }) }));
     this.owner.className = `owner-card owner-card--${mine ? 'mine' : 'owned'}`;
@@ -381,17 +392,62 @@ export class BuildingPanel {
     );
   }
 
+  price() {
+    return this.state?.building ? this.ctx.priceFor(this.state.building) : null;
+  }
+
+  /** Billboard + offers, between the owner card and the facts. */
+  renderMarket() {
+    const s = this.state;
+    const rec = s?.status === 'ready' ? this.record() : null;
+    const nodes = [];
+    if (rec?.sign?.text) {
+      nodes.push(
+        h('div', { class: 'billboard', style: { '--sign': SIGN_COLORS[rec.sign.color] || SIGN_COLORS[0] } }, h('span', { class: 'billboard-label' }, 'Billboard'), h('p', null, rec.sign.text)),
+      );
+    }
+    if (rec) {
+      const me = this.ctx.wallet.address;
+      const offers = this.ctx.openOffersFor(s.key);
+      const mine = rec.owner === me;
+      if (offers.length && (mine || offers.some((o) => o.buyer === me))) {
+        nodes.push(
+          h(
+            'div',
+            { class: 'offers' },
+            h('div', { class: 'offers-head' }, h('b', null, mine ? `Offers (${offers.length})` : 'Open offers'), mine ? h('small', null, `You receive the price minus a ${this.ctx.settings.feeBps / 100}% fee`) : null),
+            offers.slice(0, 6).map((o) =>
+              h(
+                'div',
+                { class: 'offer' },
+                avatar(o.buyer, 24),
+                h('div', { class: 'grow' }, h('b', { class: 'mono' }, `${fmtSol(o.price)} SOL`), h('small', null, `${o.buyer === me ? 'You' : shortAddr(o.buyer)} · ${timeAgo(o.time)}`)),
+                mine && !this.busy
+                  ? h('button', { class: 'btn btn--accent btn--sm', onclick: () => this.ctx.onAccept(o) }, 'Accept')
+                  : o.buyer === me && !this.busy
+                    ? h('button', { class: 'btn btn--ghost btn--sm', onclick: () => this.ctx.onCancelOffer(o) }, 'Cancel')
+                    : null,
+              ),
+            ),
+          ),
+        );
+      } else if (offers.length && !mine) {
+        nodes.push(h('p', { class: 'foot-note offers-count' }, `${offers.length} open offer${offers.length === 1 ? '' : 's'} · best ${fmtSol(offers[0].price)} SOL`));
+      }
+    }
+    this.market.replaceChildren(...nodes);
+  }
+
   renderFoot() {
     const s = this.state;
-    const { wallet, registry, settings } = this.ctx;
-    const price = this.ctx.currentPrice();
-    const usd = s?.usd ? price / 1e9 * s.usd : null;
-    const priceLabel = `${fmtSol(price)} SOL`;
+    const { wallet, settings } = this.ctx;
+    const quote = this.price();
+    const usd = s?.usd && quote ? (quote.lamports / 1e9) * s.usd : null;
     const fine = h(
       'p',
       { class: 'fine' },
       h('span', { svg: icon('shield', { size: 13 }) }),
-      settings.live ? 'Ownership is recorded on Solana. ' : 'Demo mode: purchases are simulated. ',
+      settings.live ? 'Ownership is recorded on Solana. ' : 'Demo mode: nothing real is spent. ',
       h('button', { class: 'link-btn', onclick: () => this.ctx.onHelp() }, 'How it works'),
     );
     const nodes = [];
@@ -407,37 +463,90 @@ export class BuildingPanel {
       if (rec && rec.owner === wallet.address) {
         nodes.push(
           h('div', { class: 'owned-banner owned-banner--mine' }, h('span', { svg: icon('sparkle', { size: 16 }) }), 'You own this building'),
+          this.signEditor(rec),
           h('button', { class: 'btn btn--ghost btn--block', onclick: () => this.ctx.onShare() }, h('span', { svg: icon('share', { size: 16 }) }), 'Share it'),
         );
       } else if (rec) {
-        nodes.push(
-          h('div', { class: 'owned-banner' }, h('span', { svg: icon('building', { size: 16 }) }), 'Owned by ', h('span', { class: 'mono' }, shortAddr(rec.owner))),
-          h('p', { class: 'foot-note' }, 'Every building has one owner. Find an available one nearby — there are millions.'),
-        );
-      } else if (!wallet.connected) {
-        nodes.push(
-          h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onConnect() }, h('span', { svg: icon('wallet', { size: 16 }) }), 'Connect wallet to own this'),
-          h('p', { class: 'foot-note' }, `${priceLabel}${usd ? ` ≈ ${fmtUsd(usd)}` : ''} · or free with 0.2+ SOL in your wallet`),
-        );
+        nodes.push(this.offerForm(rec));
       } else {
-        const claimed = registry.state.claimed.has(wallet.address);
-        const bal = wallet.balance;
-        const eligible = !claimed && bal != null && bal > settings.freeClaimMinLamports;
-        if (eligible) {
-          nodes.push(
-            h('button', { class: 'btn btn--accent btn--block', onclick: () => this.ctx.onAcquire('claim') }, h('span', { svg: icon('gift', { size: 16 }) }), 'Claim for free'),
-            h('button', { class: 'btn btn--ghost btn--block', onclick: () => this.ctx.onAcquire('buy') }, `Buy for ${priceLabel}`, usd ? h('span', { class: 'btn-sub' }, `≈ ${fmtUsd(usd)}`) : null),
-            h('p', { class: 'foot-note' }, 'You hold more than 0.2 SOL, so your first building is on us.'),
-          );
+        nodes.push(
+          h(
+            'div',
+            { class: 'price-row' },
+            h('div', null, h('small', null, 'Price'), h('b', { class: 'price-big' }, `${fmtSol(quote.lamports)} SOL`), usd ? h('span', { class: 'price-usd' }, `≈ ${fmtUsd(usd)}`) : null),
+            h('div', { class: 'price-factors' }, quote.factors.length ? quote.factors.map((f) => h('span', { class: 'chip chip--xs', title: `×${f.x.toFixed(1)}` }, f.label)) : h('span', { class: 'chip chip--xs' }, 'Quiet spot')),
+          ),
+        );
+        if (!wallet.exists) {
+          nodes.push(h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onConnect() }, h('span', { svg: icon('wallet', { size: 16 }) }), 'Get a wallet to own this'));
         } else {
-          nodes.push(
-            h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onAcquire('buy') }, `Buy for ${priceLabel}`, usd ? h('span', { class: 'btn-sub' }, `≈ ${fmtUsd(usd)}`) : null),
-            h('p', { class: 'foot-note' }, claimed ? 'You’ve used your free building.' : `Hold more than ${settings.freeClaimMinSol} SOL to claim one building free.`),
-          );
+          const need = quote.lamports + 20_000 - (wallet.balance ?? 0);
+          const credit = this.ctx.creditLeft();
+          if (credit >= quote.lamports) {
+            nodes.push(h('button', { class: 'btn btn--accent btn--block', onclick: () => this.ctx.onAcquire('hold') }, h('span', { svg: icon('gift', { size: 16 }) }), `Use $${settings.memecoinView.symbol} credit`, h('span', { class: 'btn-sub' }, `${fmtSol(credit)} left`)));
+          }
+          if (need > 0) {
+            nodes.push(h('button', { class: `btn btn--${credit >= quote.lamports ? 'ghost' : 'primary'} btn--block`, onclick: () => this.ctx.onDeposit(need) }, h('span', { svg: icon('plus', { size: 16 }) }), `Deposit to buy · ${fmtSol(quote.lamports)} SOL`));
+          } else {
+            nodes.push(h('button', { class: `btn btn--${credit >= quote.lamports ? 'ghost' : 'primary'} btn--block`, onclick: () => this.ctx.onAcquire('buy') }, `Buy for ${fmtSol(quote.lamports)} SOL`));
+          }
         }
       }
     }
     nodes.push(fine);
-    this.foot.replaceChildren(...nodes);
+    this.foot.replaceChildren(...nodes.filter(Boolean));
+  }
+
+  offerForm(rec) {
+    const { wallet, settings } = this.ctx;
+    const me = wallet.address;
+    const mine = this.ctx.openOffersFor(rec.key).find((o) => o.buyer === me);
+    const suggested = Math.max(rec.price * 1.25, this.price()?.lamports || 0, 1_000_000);
+    const input = h('input', { class: 'field-input', type: 'number', min: '0.001', step: '0.001', value: (suggested / 1e9).toFixed(3), 'aria-label': 'Offer in SOL' });
+    const submit = () => {
+      const lamports = Math.round(Number(input.value) * 1e9);
+      if (!(lamports >= 1_000_000)) return this.ctx.toast({ title: 'Offers start at 0.001 SOL', tone: 'error' });
+      this.ctx.onOffer(lamports);
+    };
+    return h(
+      'div',
+      { class: 'offer-form' },
+      h('div', { class: 'owned-banner' }, h('span', { svg: icon('building', { size: 16 }) }), 'Owned by ', h('span', { class: 'mono' }, shortAddr(rec.owner))),
+      mine ? h('p', { class: 'foot-note' }, `Your offer: ${fmtSol(mine.price)} SOL — keep that much in your wallet until the owner decides.`) : null,
+      wallet.exists
+        ? h('div', { class: 'field-row' }, input, h('span', { class: 'field-unit' }, 'SOL'), h('button', { class: 'btn btn--primary btn--sm', onclick: submit }, mine ? 'Offer again' : 'Make offer'))
+        : h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onConnect() }, 'Get a wallet to make an offer'),
+      h('p', { class: 'foot-note' }, `Last price ${fmtSol(rec.price)} SOL. If the owner accepts, the swap happens instantly on-chain (${settings.feeBps / 100}% market fee).`),
+    );
+  }
+
+  signEditor(rec) {
+    const text = h('input', { class: 'field-input', maxlength: '60', placeholder: 'Put up a sign: your name, brand, $TICKER…', value: rec.sign?.text || '' });
+    let color = rec.sign?.color ?? 0;
+    const swatches = h(
+      'div',
+      { class: 'swatches' },
+      SIGN_COLORS.map((c, i) =>
+        h('button', {
+          class: `swatch${i === color ? ' is-active' : ''}`,
+          style: { background: c },
+          'aria-label': `Color ${i + 1}`,
+          onclick: (e) => {
+            color = i;
+            swatches.querySelectorAll('.swatch').forEach((el) => el.classList.remove('is-active'));
+            e.currentTarget.classList.add('is-active');
+          },
+        }),
+      ),
+    );
+    return h(
+      'details',
+      { class: 'sign-editor' },
+      h('summary', null, h('span', { svg: icon('sparkle', { size: 15 }) }), rec.sign ? 'Edit your billboard' : 'Put up a billboard'),
+      h('p', { class: 'foot-note' }, 'Your sign glows on the map for everyone who flies by — advertise anything.'),
+      text,
+      swatches,
+      h('button', { class: 'btn btn--primary btn--block', onclick: () => this.ctx.onSign({ text: text.value.trim(), color }) }, 'Save billboard'),
+    );
   }
 }

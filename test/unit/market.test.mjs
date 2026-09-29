@@ -1,0 +1,208 @@
+// The v2 protocol end to end on a real SVM (LiteSVM): Solworld wallets,
+// purchases, competing offers, atomic sales, resale, meme-coin credit,
+// billboards, and treasury revoke/refund — all through the site's own code.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import nacl from 'tweetnacl';
+import bs58 from 'bs58';
+import { Chain } from '../e2e/chain.mjs';
+import {
+  Rpc,
+  compileMessage,
+  memoInstruction,
+  parseNonceAccount,
+  placeSignature,
+  serializeUnsignedTransaction,
+  transferInstruction,
+} from '../../solworld/assets/js/solana.js';
+import { ChainRegistry, buildMemo, deriveRegistryAddress, openOffers, saleFee } from '../../solworld/assets/js/registry.js';
+import { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } from '../../solworld/assets/js/market.js';
+import { BurnerWallet, verifySignature } from '../../solworld/assets/js/burner.js';
+import { priceBuilding, MIN_LAMPORTS, MAX_LAMPORTS } from '../../solworld/assets/js/pricing.js';
+
+const SOL = 1_000_000_000;
+const MINT = 'MemeMint111111111111111111111111111111111111'.slice(0, 44);
+
+function memoryStorage() {
+  const m = new Map();
+  return { get: (k) => (m.has(k) ? structuredClone(m.get(k)) : null), set: (k, v) => m.set(k, structuredClone(v)), remove: (k) => m.delete(k) };
+}
+
+function world() {
+  const chain = new Chain();
+  const rpc = new Rpc(['http://chain.test'], { fetchImpl: async (u, init) => ({ ok: true, status: 200, json: async () => chain.handle(JSON.parse(init.body)) }) });
+  return { chain, rpc };
+}
+
+async function wallet(rpc, chain, sol) {
+  const w = new BurnerWallet({ rpc, storage: memoryStorage() });
+  await w.create();
+  if (sol) chain.airdrop(w.address, sol * SOL);
+  await w.refreshBalance();
+  return w;
+}
+
+test('prices stay between 0.001 and 3 SOL and favour famous, busy, tall buildings', () => {
+  const rural = priceBuilding({ tags: { building: 'shed' }, area: 40, center: [-100.5, 45.2] });
+  const suburb = priceBuilding({ tags: { building: 'house' }, area: 140, center: [-73.75, 40.9] });
+  const midtown = priceBuilding({ tags: { building: 'apartments', height: '30' }, area: 600, center: [-73.9855, 40.7484] });
+  const empire = priceBuilding({ tags: { name: 'Empire State Building', wikidata: 'Q9188', height: '443' }, area: 8000, center: [-73.9857, 40.7484] });
+  assert.equal(rural.lamports, MIN_LAMPORTS);
+  assert.equal(empire.lamports, MAX_LAMPORTS);
+  assert.ok(suburb.lamports > rural.lamports && midtown.lamports > suburb.lamports && empire.lamports > midtown.lamports, JSON.stringify([rural, suburb, midtown, empire].map((p) => p.lamports)));
+  assert.ok(midtown.factors.some((f) => /Busy area · New York/.test(f.label)));
+});
+
+test('Solworld wallet exports a Phantom-compatible key and restores from it', async () => {
+  const { rpc } = world();
+  const a = new BurnerWallet({ rpc, storage: memoryStorage() });
+  await a.create();
+  const secret = a.exportSecret();
+  const kp = nacl.sign.keyPair.fromSecretKey(bs58.decode(secret));
+  assert.equal(bs58.encode(kp.publicKey), a.address);
+  const b = new BurnerWallet({ rpc, storage: memoryStorage() });
+  await b.importSecret(secret);
+  assert.equal(b.address, a.address);
+  const msg = new TextEncoder().encode('hello');
+  assert.ok(await verifySignature(await b.sign(msg), msg, a.address));
+  await assert.rejects(b.importSecret('abc'), /not a Solana secret key/);
+});
+
+test('buy → competing offers → atomic sale → resale, with fees and nonce safety', async () => {
+  const { chain, rpc } = world();
+  const treasury = bs58.encode(nacl.sign.keyPair().publicKey);
+  chain.airdrop(treasury, 1_000_000);
+  const reference = await deriveRegistryAddress(treasury);
+  const feeBps = 500;
+  const rules = { treasury, feeBps, memecoin: null };
+  const registry = new ChainRegistry({ rpc, treasury, cluster: 'localnet', rules, storage: memoryStorage() });
+  await registry.init();
+  const alice = await wallet(rpc, chain, 5);
+  const bob = await wallet(rpc, chain, 5);
+  const carol = await wallet(rpc, chain, 5);
+  const key = 'w34633854';
+  const center = [-73.985664, 40.74844];
+  const blockhash = async () => (await rpc.getLatestBlockhash()).blockhash;
+  const act = async (w, lamports, memo) => w.send(actionMessage({ from: w.address, treasury, reference, lamports, memo }, await blockhash()));
+
+  // Alice buys.
+  await act(alice, 0.5 * SOL, buildMemo('buy', { key, center, price: 0.5 * SOL }));
+  await registry.sync();
+  assert.equal(registry.state.buildings.get(key).owner, alice.address);
+
+  // Bob's offer creates the building's nonce (authority: Alice) and pre-signs the sale.
+  const rent = await rpc.getMinimumBalanceForRentExemption(80);
+  const nonce = await nonceAddressFor(bob.address, key);
+  await bob.send(createNonceMessage({ payer: bob.address, nonce, key, lamports: rent, authority: alice.address, recentBlockhash: await blockhash() }));
+  const info = parseNonceAccount((await rpc.getAccountInfo(nonce)).data);
+  assert.equal(info.authority, alice.address);
+  const offer = async (buyer, price) => {
+    const sale = buildSaleMessage({ buyer: buyer.address, seller: alice.address, treasury, reference, key, price, feeBps, nonce, nonceValue: info.value });
+    const buyerSig = bs58.encode(await buyer.sign(sale.bytes));
+    await act(buyer, 0, buildMemo('offer', { key, price, nonce, nonceValue: info.value, buyerSig }));
+  };
+  await offer(bob, 1.2 * SOL);
+  await offer(carol, 1.0 * SOL);
+  await registry.sync();
+  const offers = openOffers(registry.state, key);
+  assert.deepEqual(offers.map((o) => [o.buyer, o.price]), [[bob.address, 1.2 * SOL], [carol.address, 1.0 * SOL]]);
+
+  // Alice accepts Bob's offer: rebuild, verify his signature, co-sign, submit.
+  const accept = async (seller, o) => {
+    const sale = buildSaleMessage({ buyer: o.buyer, seller: seller.address, treasury, reference, key, price: o.price, feeBps, nonce: o.nonce, nonceValue: o.nonceValue });
+    assert.ok(await verifySignature(bs58.decode(o.buyerSig), sale.bytes, o.buyer));
+    const wire = serializeUnsignedTransaction(sale);
+    placeSignature(wire, sale, o.buyer, bs58.decode(o.buyerSig));
+    await seller.signInto(wire, sale);
+    return rpc.sendRawTransaction(wire);
+  };
+  const aliceBefore = chain.balance(alice.address);
+  const treasuryBefore = chain.balance(treasury);
+  await accept(alice, offers[0]);
+  await registry.sync();
+  assert.equal(registry.state.buildings.get(key).owner, bob.address);
+  assert.equal(chain.balance(alice.address) - aliceBefore, 1.2 * SOL - saleFee(1.2 * SOL, feeBps));
+  assert.equal(chain.balance(treasury) - treasuryBefore, saleFee(1.2 * SOL, feeBps));
+  assert.equal(registry.state.offers.get(offers[1].sig).status, 'stale');
+  assert.equal(parseNonceAccount((await rpc.getAccountInfo(nonce)).data).authority, bob.address, 'nonce now belongs to the new owner');
+
+  // Carol's old pre-signed sale can no longer execute (nonce advanced).
+  await assert.rejects(accept(alice, offers[1]));
+
+  // Resale: Carol offers again on the same nonce, Bob accepts.
+  const info2 = parseNonceAccount((await rpc.getAccountInfo(nonce)).data);
+  const sale2 = buildSaleMessage({ buyer: carol.address, seller: bob.address, treasury, reference, key, price: 2 * SOL, feeBps, nonce, nonceValue: info2.value });
+  await act(carol, 0, buildMemo('offer', { key, price: 2 * SOL, nonce, nonceValue: info2.value, buyerSig: bs58.encode(await carol.sign(sale2.bytes)) }));
+  await registry.sync();
+  await accept(bob, openOffers(registry.state, key)[0]);
+  await registry.sync();
+  const b = registry.state.buildings.get(key);
+  assert.equal(b.owner, carol.address);
+  assert.equal(b.price, 2 * SOL);
+  assert.equal(registry.state.totals.sales, 2);
+  assert.deepEqual(registry.state.leaderboard.map((o) => o.address), [carol.address]);
+
+  // Billboard: only the owner's counts.
+  await act(bob, 0, buildMemo('sign', { key, color: 1, text: 'Not mine' }));
+  await act(carol, 0, buildMemo('sign', { key, color: 3, text: 'Carol’s HQ 🚀' }));
+  await registry.sync();
+  assert.deepEqual([registry.state.buildings.get(key).sign.text, registry.state.buildings.get(key).sign.color], ['Carol’s HQ 🚀', 3]);
+});
+
+test('meme-coin credit: linked holders take buildings up to their holdings value', async () => {
+  const { chain, rpc } = world();
+  const treasuryKp = nacl.sign.keyPair();
+  const treasury = bs58.encode(treasuryKp.publicKey);
+  chain.airdrop(treasury, 2 * SOL);
+  const reference = await deriveRegistryAddress(treasury);
+  const mint = bs58.encode(nacl.randomBytes(32));
+  const memecoin = { mint, symbol: 'MEME', prices: [{ from: 0, lamportsPerToken: 0.000001 * SOL }] };
+  const registry = new ChainRegistry({ rpc, treasury, cluster: 'localnet', rules: { treasury, feeBps: 500, memecoin }, storage: memoryStorage() });
+  await registry.init();
+  const dave = await wallet(rpc, chain, 0.01);
+  const holder = nacl.sign.keyPair();
+  const holderAddr = bs58.encode(holder.publicKey);
+  const tokenAccount = bs58.encode(nacl.randomBytes(32));
+  chain.setTokenAccount(tokenAccount, { mint, owner: holderAddr, uiAmount: 1_000_000 }); // worth 1 SOL
+  const blockhash = async () => (await rpc.getLatestBlockhash()).blockhash;
+
+  // Link: the holder wallet co-signs (in the app this is Phantom's signTransaction).
+  const link = actionMessage({ from: dave.address, treasury, reference, memo: buildMemo('link', { holder: holderAddr }), memoSigners: [holderAddr] }, await blockhash());
+  const wire = serializeUnsignedTransaction(link);
+  placeSignature(wire, link, holderAddr, nacl.sign.detached(link.bytes, holder.secretKey));
+  await dave.signInto(wire, link);
+  await rpc.sendRawTransaction(wire);
+
+  const hold = async (key, price) =>
+    dave.send(actionMessage({ from: dave.address, treasury, reference, memo: buildMemo('hold', { key, center: [0, 0], price }), extraRefs: [tokenAccount] }, await blockhash()));
+  await hold('w1', 0.6 * SOL);
+  await hold('w2', 0.5 * SOL); // would exceed 1 SOL of credit
+  await hold('w3', 0.4 * SOL); // exactly uses the rest
+  await registry.sync();
+  const s = registry.state;
+  assert.deepEqual([...s.buildings.keys()].sort(), ['w1', 'w3']);
+  assert.equal(s.voids.find((v) => v.key === 'w2').reason, 'no-credit');
+  assert.equal(s.holderSpent.get(holderAddr), SOL);
+  assert.equal(s.totals.volume, 0, 'credit purchases move no SOL');
+
+  // A holder who didn't co-sign can't be claimed by someone else.
+  const mallory = await wallet(rpc, chain, 0.01);
+  const fake = actionMessage({ from: mallory.address, treasury, reference, memo: buildMemo('link', { holder: holderAddr }) }, await blockhash());
+  await mallory.send(fake);
+  await mallory.send(actionMessage({ from: mallory.address, treasury, reference, memo: buildMemo('hold', { key: 'w9', center: [0, 0], price: 0.001 * SOL }), extraRefs: [tokenAccount] }, await blockhash()));
+  await registry.sync();
+  assert.equal(registry.state.voids.find((v) => v.key === 'w9').reason, 'unlinked');
+
+  // Treasury revokes w3 and refunds nothing (it was credit); w3 is free again.
+  const revoke = compileMessage({
+    payer: treasury,
+    recentBlockhash: await blockhash(),
+    instructions: [transferInstruction({ from: treasury, to: dave.address, lamports: 0, references: [reference] }), memoInstruction(buildMemo('revoke', { ref: s.buildings.get('w3').sig }))],
+  });
+  const rw = serializeUnsignedTransaction(revoke);
+  placeSignature(rw, revoke, treasury, nacl.sign.detached(revoke.bytes, treasuryKp.secretKey));
+  await rpc.sendRawTransaction(rw);
+  await registry.sync();
+  assert.equal(registry.state.buildings.has('w3'), false);
+  assert.equal(registry.state.voids.find((v) => v.key === 'w3').reason, 'revoked');
+});

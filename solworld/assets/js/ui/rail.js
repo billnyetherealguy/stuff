@@ -110,7 +110,7 @@ export class Rail {
                 h('span', { class: 'leader-name mono' }, o.address === me ? 'You' : shortAddr(o.address, 4, 4)),
                 h('span', { class: 'leader-bar' }, h('i', { style: { width: `${Math.max(6, (o.count / max) * 100)}%` } })),
               ),
-              h('span', { class: 'leader-count' }, h('b', null, fmtInt(o.count)), h('small', null, o.count === 1 ? 'building' : 'buildings')),
+              h('span', { class: 'leader-count' }, h('b', null, fmtInt(o.count)), h('small', null, `${fmtSol(o.value)} SOL`)),
             ),
           ),
         ),
@@ -121,7 +121,7 @@ export class Rail {
   renderActivity(state) {
     const items = state.activity.slice(0, 60);
     if (!items.length) {
-      this.body.replaceChildren(emptyState('activity', 'Quiet so far', 'Purchases and free claims appear here the moment they land on Solana.'));
+      this.body.replaceChildren(emptyState('activity', 'Quiet so far', 'Purchases, sales and credit claims appear here the moment they land on Solana.'));
       return;
     }
     const me = this.ctx.wallet.address;
@@ -140,10 +140,10 @@ export class Rail {
               h(
                 'span',
                 { class: 'feed-main' },
-                h('span', { class: 'feed-line' }, h('b', { class: 'mono' }, r.owner === me ? 'You' : shortAddr(r.owner)), r.kind === 'claim' ? ' claimed a building' : ' bought a building'),
+                h('span', { class: 'feed-line' }, h('b', { class: 'mono' }, r.owner === me ? 'You' : shortAddr(r.owner)), r.kind === 'hold' ? ' took a building with credit' : r.kind === 'sale' ? ` bought from ${r.seller === me ? 'you' : shortAddr(r.seller)}` : ' bought a building'),
                 h('span', { class: 'feed-meta' }, h('span', { svg: icon('pin', { size: 12 }) }), this.label(r), h('span', { class: 'dot-sep' }, '·'), timeAgo(r.time)),
               ),
-              h('span', { class: `feed-amt${r.kind === 'claim' ? ' is-free' : ''}` }, r.kind === 'claim' ? 'FREE' : `${fmtSol(r.paid)} SOL`),
+              h('span', { class: `feed-amt${r.kind === 'hold' ? ' is-free' : ''}` }, r.kind === 'hold' ? 'CREDIT' : `${fmtSol(r.price)} SOL`),
             ),
           ),
         ),
@@ -182,7 +182,7 @@ export class Rail {
             { class: 'owner-stats' },
             stat(fmtInt(o?.count || 0), o?.count === 1 ? 'building' : 'buildings'),
             stat(o ? `#${o.rank}` : '—', 'rank'),
-            stat(o ? fmtSol(o.spent) : '0', 'SOL spent'),
+            stat(o ? fmtSol(o.value) : '0', 'SOL value'),
           ),
         ),
         records.length
@@ -197,7 +197,7 @@ export class Rail {
                     'button',
                     { class: 'feed-item', onclick: () => this.ctx.onOpenRecord(r) },
                     h('span', { class: 'feed-icon', svg: icon('building', { size: 16 }) }),
-                    h('span', { class: 'feed-main' }, h('span', { class: 'feed-line' }, this.label(r)), h('span', { class: 'feed-meta' }, r.kind === 'claim' ? 'Claimed free' : `Bought for ${fmtSol(r.paid)} SOL`, h('span', { class: 'dot-sep' }, '·'), timeAgo(r.time))),
+                    h('span', { class: 'feed-main' }, h('span', { class: 'feed-line' }, this.label(r)), h('span', { class: 'feed-meta' }, r.acquired === 'hold' ? 'Taken with credit' : `${r.acquired === 'sale' ? 'Bought from an owner' : 'Bought'} for ${fmtSol(r.price)} SOL`, h('span', { class: 'dot-sep' }, '·'), timeAgo(r.time))),
                     h('span', { svg: icon('chevronRight', { size: 16 }) }),
                   ),
                 ),

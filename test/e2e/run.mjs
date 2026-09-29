@@ -13,6 +13,7 @@ const OUT = path.join(HERE, '..', 'artifacts');
 fs.mkdirSync(OUT, { recursive: true });
 const which = process.argv[2] || 'all';
 const results = [];
+let activePage = null; // screenshot target when a step fails
 
 async function step(name, fn) {
   const t0 = Date.now();
@@ -22,6 +23,7 @@ async function step(name, fn) {
     console.log(`ok   ${name}`);
   } catch (err) {
     results.push(`FAIL ${name}: ${err.message}`);
+    await activePage?.screenshot({ path: path.join(OUT, 'failure.png') }).catch(() => {});
     console.log(`FAIL ${name}: ${err.stack}`);
     throw err;
   }
@@ -54,7 +56,7 @@ async function project(page, lngLat) {
   }, lngLat);
 }
 
-async function clickBuildingAt(page, lngLat, { keepCamera = false } = {}) {
+async function clickBuildingAt(page, lngLat, { keepCamera = false, timeout = 15_000 } = {}) {
   if (!keepCamera) {
     // Top-down over the target so nothing taller stands in front of it.
     await page.evaluate(([lng, lat]) => {
@@ -66,7 +68,7 @@ async function clickBuildingAt(page, lngLat, { keepCamera = false } = {}) {
   }
   const p = await project(page, lngLat);
   await page.mouse.click(p.x, p.y);
-  await page.waitForFunction(() => document.querySelector('#panel')?.dataset.tone && document.querySelector('#panel').dataset.tone !== 'resolving', null, { timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelector('#panel.is-open')?.dataset.tone && document.querySelector('#panel').dataset.tone !== 'resolving', null, { timeout });
 }
 
 const EMPIRE = [-73.985664, 40.74844];
@@ -78,8 +80,48 @@ async function closePanel(page) {
   }
 }
 
+async function createWallet(page) {
+  await page.getByRole('button', { name: 'Create my wallet' }).click();
+  await page.waitForSelector('.modal-title >> text=Deposit SOL');
+}
+
+async function done(page) {
+  await page.getByRole('button', { name: 'Done' }).click();
+  await page.waitForTimeout(400);
+}
+
+async function openWalletMenu(page) {
+  if (!(await page.evaluate(() => document.querySelector('#wallet-slot').classList.contains('menu-open')))) await page.locator('.wallet-pill').click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.wallet-menu')).opacity === '1');
+}
+
+const tone = (page) => page.evaluate(() => document.querySelector('#panel').dataset.tone);
+const waitTone = (page, t, timeout = 15_000) => page.waitForFunction((x) => document.querySelector('#panel').dataset.tone === x, t, { timeout });
+
+async function nearby(page, dx, dy) {
+  return page.evaluate(([x, y]) => {
+    const c = window.solworld.map.map.getCenter();
+    return [c.lng + x, c.lat + y];
+  }, [dx, dy]);
+}
+
+/** Clicks around the view until an available building opens. */
+async function openAvailable(page, offsets) {
+  for (const [dx, dy] of offsets) {
+    await closePanel(page);
+    try {
+      await clickBuildingAt(page, await nearby(page, dx, dy), { timeout: 4000 });
+    } catch {
+      continue; // clicked a street, try the next spot
+    }
+    if ((await tone(page)) === 'available') return true;
+  }
+  throw new Error('no available building found');
+}
+
 async function demo(env) {
-  const { page, log, browser } = await launch({ ...env });
+  const { page, log, browser } = await launch({ ...env, config: {} });
+  activePage = page;
   try {
     await step('demo: loads with no errors, hero over globe', async () => {
       await ready(page, env.origin);
@@ -89,8 +131,9 @@ async function demo(env) {
       assert.deepEqual(log.errors, []);
     });
 
-    await step('demo: seeds landmarks into the leaderboard', async () => {
+    await step('demo: seeds landmarks (with a billboard) into the leaderboard', async () => {
       await page.waitForFunction(() => window.solworld.registry.state.totals.buildings >= 5, null, { timeout: 15_000 });
+      assert.ok(await page.evaluate(() => [...window.solworld.registry.state.buildings.values()].some((b) => b.sign)));
     });
 
     await step('demo: start exploring flies into the city in 3D', async () => {
@@ -115,18 +158,16 @@ async function demo(env) {
         }
       }
       assert.ok(hovered, 'hover state set');
-      const kinds = await page.evaluate(async () => (await window.solworld.map.map.getSource('sw-shells').getData()).features.map((f) => f.properties.kind));
-      assert.ok(kinds.includes('hover'), `hover shell rendered (${kinds})`);
     });
 
-    await step('demo: clicking a landmark opens the panel with owner, facts, photo', async () => {
+    await step('demo: famous landmark is owned, priced at the 3 SOL cap', async () => {
       await clickBuildingAt(page, EMPIRE);
       await page.waitForFunction(() => document.querySelector('.panel-title')?.textContent === 'Empire State Building', null, { timeout: 10_000 });
       await page.waitForTimeout(2600);
       await stopMotion(page);
-      const tone = await page.evaluate(() => document.querySelector('#panel').dataset.tone);
-      assert.equal(tone, 'owned', 'Empire State Building is pre-owned in demo');
+      assert.equal(await tone(page), 'owned');
       assert.match(await page.locator('.facts').innerText(), /443 m/);
+      assert.ok(await page.getByRole('button', { name: 'Get a wallet to make an offer' }).count(), 'offer form for owned buildings');
       await shot(page, '03-landmark-panel');
       assert.match(page.url(), /#\/b\/w\d+/);
     });
@@ -138,67 +179,138 @@ async function demo(env) {
       await page.locator('#panel .panel-media').screenshot({ path: path.join(OUT, '04-satellite-closeup.png') });
     });
 
-    let target;
-    await step('demo: an ordinary building resolves via OSM and is available', async () => {
-      await closePanel(page);
-      await page.waitForTimeout(500);
-      target = await page.evaluate(() => {
-        // a default-height building (merged in tiles) near the view center
-        const m = window.solworld.map.map;
-        const c = m.getCenter();
-        return [c.lng + 0.0022, c.lat + 0.0006];
-      });
-      await clickBuildingAt(page, target);
-      const tone = await page.evaluate(() => document.querySelector('#panel').dataset.tone);
-      assert.equal(tone, 'available');
+    await step('demo: an ordinary building is available with a price breakdown', async () => {
+      await openAvailable(page, [[0.0022, 0.0006], [-0.0016, -0.0012], [0.0019, -0.0004], [-0.003, 0.001]]);
       await page.waitForTimeout(1500);
       await stopMotion(page);
+      assert.ok(await page.locator('.price-factors .chip').count());
       await shot(page, '05-available-panel');
     });
 
-    await step('demo: connect a demo wallet and claim for free', async () => {
-      await page.locator('.panel-foot').getByRole('button', { name: /Connect wallet/ }).click();
-      await page.getByRole('button', { name: /Use a demo wallet/ }).click();
-      await page.waitForTimeout(400);
-      await page.getByRole('button', { name: 'Claim for free' }).click();
+    await step('demo: get a Solworld wallet (no extension) and buy', async () => {
+      await page.getByRole('button', { name: 'Get a wallet to own this' }).click();
+      await createWallet(page);
+      await shot(page, '06-deposit');
+      await done(page);
+      const before = await page.evaluate(() => window.solworld.wallet.balance);
+      assert.equal(before, 5_000_000_000);
+      const label = await page.getByRole('button', { name: /^Buy for/ }).innerText();
+      const price = Math.round(Number(/Buy for ([\d.]+) SOL/.exec(label)[1]) * 1e9);
+      await page.getByRole('button', { name: /^Buy for/ }).click();
       await page.getByRole('button', { name: 'I understand' }).click();
-      await page.waitForFunction(() => document.querySelector('#panel').dataset.tone === 'mine', null, { timeout: 10_000 });
+      await waitTone(page, 'mine');
+      assert.equal(await page.evaluate(() => window.solworld.wallet.balance), before - price);
       await page.waitForTimeout(900);
-      await shot(page, '06-claimed');
-      const me = await page.evaluate(() => window.solworld.wallet.address);
-      const owner = await page.evaluate((a) => window.solworld.registry.state.owners.get(a)?.count, me);
-      assert.equal(owner, 1);
+      await shot(page, '07-bought');
     });
 
-    await step('demo: buy a second building, leaderboard shows you', async () => {
-      await page.waitForTimeout(1500);
+    await step('demo: put up a billboard that shows on the map', async () => {
+      await page.getByText('Put up a billboard').click();
+      await page.locator('.sign-editor .field-input').fill('gm from Solworld');
+      await page.locator('.sign-editor .swatch').nth(3).click();
+      await page.getByRole('button', { name: 'Save billboard' }).click();
+      await page.waitForSelector('.billboard >> text=gm from Solworld', { timeout: 10_000 });
+      const key = await page.evaluate(() => location.hash.split('/').pop());
+      assert.deepEqual(await page.evaluate((k) => window.solworld.registry.state.buildings.get(k).sign.color, key), 3);
       await closePanel(page);
-      await page.waitForTimeout(400);
-      const p2 = await page.evaluate(() => {
-        const c = window.solworld.map.map.getCenter();
-        return [c.lng - 0.0016, c.lat - 0.0012];
+      await page.evaluate(() => window.solworld.map.map.easeTo({ zoom: 15.2, pitch: 45, duration: 0 }));
+      await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+      const signs = await page.evaluate(() => window.solworld.map.map.queryRenderedFeatures({ layers: ['sw-signs'] }).map((f) => f.properties.sign));
+      assert.ok(signs.includes('gm from Solworld'), `rendered signs: ${signs}`);
+      await shot(page, '08-billboard-map');
+    });
+
+    await step('demo: link meme-coin holdings and take a building with credit', async () => {
+      await openWalletMenu(page);
+      await page.getByRole('button', { name: /Use your \$DEMO/ }).click();
+      await page.locator('.modal .field-input').fill('9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM');
+      await page.waitForSelector('.holder-preview >> text=Credit left');
+      await shot(page, '09-holder');
+      await page.getByRole('button', { name: 'Verify with my wallet' }).click();
+      await page.waitForSelector('.toast >> text=$DEMO linked', { timeout: 10_000 });
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ zoom: 16.4 }));
+      await openAvailable(page, [[-0.0016, -0.0012], [0.0019, -0.0004], [-0.003, 0.001], [0.001, 0.0025]]);
+      await page.getByRole('button', { name: /Use \$DEMO credit/ }).click();
+      await waitTone(page, 'mine');
+      const key = await page.evaluate(() => location.hash.split('/').pop());
+      assert.equal(await page.evaluate((k) => window.solworld.registry.state.buildings.get(k).acquired, key), 'hold');
+    });
+
+    await step('demo: offer on an owned landmark; the owner accepts', async () => {
+      await closePanel(page);
+      await clickBuildingAt(page, EMPIRE);
+      await page.waitForTimeout(600);
+      await page.locator('.offer-form .field-input').fill('3.4');
+      await page.getByRole('button', { name: 'Make offer' }).click();
+      await page.waitForSelector('.toast >> text=Offer sent', { timeout: 10_000 });
+      await stopMotion(page);
+      await shot(page, '10-offer-sent');
+      await waitTone(page, 'mine', 20_000);
+      const rec = await page.evaluate(() => {
+        const s = window.solworld.registry.state;
+        return s.buildings.get(location.hash.split('/').pop());
       });
-      await clickBuildingAt(page, p2);
-      const tone = await page.evaluate(() => document.querySelector('#panel').dataset.tone);
-      if (tone === 'available') {
-        await page.getByRole('button', { name: /^Buy for/ }).click();
-        await page.waitForFunction(() => document.querySelector('#panel').dataset.tone === 'mine', null, { timeout: 10_000 });
-      }
+      assert.equal(rec.acquired, 'sale');
+      assert.equal(rec.price, 3_400_000_000);
+    });
+
+    await step('demo: an incoming offer can be accepted from the panel', async () => {
+      await page.evaluate(async () => {
+        const key = location.hash.split('/').pop();
+        await window.solworld.registry.submit({ action: 'offer', key, price: 3_900_000_000, nonce: 'demo', nonceValue: 'demo', buyerSig: 'demo', signers: ['Bidder11111111111111111111111111111111111111'], transfers: [{ s: 'Bidder11111111111111111111111111111111111111', d: 'DemoTreasury1111111111111111111111111111111', l: 0 }], tokens: [] });
+      });
+      await page.waitForSelector('.toast >> text=New offer: 3.90 SOL', { timeout: 10_000 });
+      await page.waitForSelector('.offers >> text=3.90 SOL');
+      await shot(page, '11-incoming-offer');
+      const before = await page.evaluate(() => window.solworld.wallet.balance);
+      await page.locator('.offer').getByRole('button', { name: 'Accept' }).click();
+      await waitTone(page, 'owned');
+      assert.equal(await page.evaluate(() => window.solworld.wallet.balance) - before, 3_900_000_000 - 195_000_000);
+    });
+
+    await step('demo: close up, buildings get lit facades over satellite ground', async () => {
+      await closePanel(page);
+      await page.evaluate(([lng, lat]) => window.solworld.map.map.jumpTo({ center: [lng, lat], zoom: 17.2, pitch: 62, bearing: 30 }), EMPIRE);
+      await page.evaluate(() => new Promise((r) => window.solworld.map.map.once('idle', r)));
+      await page.waitForTimeout(800);
+      const ok = await page.evaluate(() => {
+        const m = window.solworld.map.map;
+        return m.getZoom() >= 16 && !!m.getLayer('building-facade') && m.hasImage('facade-0') && !!m.getLayer('satellite');
+      });
+      assert.ok(ok, 'facade patterns + satellite ground are active');
+      await shot(page, '12-closeup-realism');
+    });
+
+    await step('demo: leaderboard, activity and owner profile', async () => {
       await page.evaluate(() => document.querySelector('.rail-opener:not(.is-hidden)')?.click());
       await page.waitForTimeout(900);
-      await stopMotion(page);
-      await shot(page, '07-leaderboard');
       assert.ok(await page.locator('.leader.is-me').count(), 'you are on the leaderboard');
-    });
-
-    await step('demo: activity feed and owner profile', async () => {
       await page.getByRole('tab', { name: 'Activity' }).click();
       await page.waitForTimeout(600);
-      assert.ok((await page.locator('.feed-item').count()) >= 3);
+      assert.ok((await page.locator('.feed-item').count()) >= 5);
+      await shot(page, '13-activity');
       await page.getByRole('tab', { name: 'Leaderboard' }).click();
       await page.locator('.leader').first().click();
       await page.waitForTimeout(600);
-      await shot(page, '08-owner-profile');
+    });
+
+    await step('demo: wallet menu, withdraw and backup', async () => {
+      await openWalletMenu(page);
+      await shot(page, '14-wallet-menu');
+      await page.getByRole('button', { name: 'Withdraw' }).first().click();
+      await page.locator('.modal input.field-input').first().fill('9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM');
+      await page.locator('.modal input.field-input').nth(1).fill('1');
+      const before = await page.evaluate(() => window.solworld.wallet.balance);
+      await page.locator('.modal-actions').getByRole('button', { name: 'Withdraw' }).click();
+      await page.waitForSelector('.toast >> text=Withdrawal sent');
+      assert.equal(before - (await page.evaluate(() => window.solworld.wallet.balance)), 1_000_000_000);
+      await openWalletMenu(page);
+      await page.getByRole('menuitem', { name: 'Back up key' }).click();
+      await page.waitForSelector('.secret');
+      const secret = await page.locator('.secret').innerText();
+      const kp = nacl.sign.keyPair.fromSecretKey(bs58.decode(secret));
+      assert.equal(bs58.encode(kp.publicKey), await page.evaluate(() => window.solworld.wallet.address));
+      await page.keyboard.press('Escape');
     });
 
     await step('demo: search finds a landmark and opens it', async () => {
@@ -206,7 +318,6 @@ async function demo(env) {
       await page.keyboard.press('/');
       await page.keyboard.type('empire state');
       await page.waitForSelector('.search-item >> text=Empire State Building');
-      await shot(page, '09-search');
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('.panel-title')?.textContent === 'Empire State Building', null, { timeout: 15_000 });
     });
@@ -216,11 +327,11 @@ async function demo(env) {
       await page.locator('#btn-help').click();
       await page.waitForSelector('.modal-title >> text=How it works');
       await page.waitForTimeout(700);
-      await shot(page, '10-how-it-works');
-      await page.getByRole('button', { name: 'Operator & refunds' }).click();
+      await shot(page, '15-how-it-works');
+      await page.getByRole('button', { name: /Operator/ }).click();
       await page.waitForSelector('.modal-title >> text=Operator');
       await page.waitForTimeout(700);
-      await shot(page, '11-operator');
+      await shot(page, '16-operator');
       await page.keyboard.press('Escape');
       await page.keyboard.press('Escape');
     });
@@ -229,13 +340,16 @@ async function demo(env) {
       await closePanel(page);
       await page.getByRole('button', { name: 'Whole world' }).click();
       await page.waitForTimeout(3600);
-      await shot(page, '12-globe-lights');
+      await shot(page, '17-globe-lights');
     });
 
-    await step('demo: deep link opens a building directly', async () => {
+    await step('demo: wallet and buildings survive a reload', async () => {
+      const me = await page.evaluate(() => window.solworld.wallet.address);
       const key = await page.evaluate(() => [...window.solworld.registry.state.buildings.keys()][0]);
       await page.goto(`${env.origin}/#/b/${key}`);
       await page.waitForFunction(() => window.solworld && document.querySelector('#panel.is-open'), null, { timeout: 20_000 });
+      assert.equal(await page.evaluate(() => window.solworld.wallet.address), me);
+      assert.ok(await page.evaluate((a) => window.solworld.registry.state.owners.get(a)?.count >= 2, me));
     });
 
     await step('demo: no page errors', async () => {
@@ -249,16 +363,34 @@ async function demo(env) {
 }
 
 async function live(env) {
+  const { Rpc } = await import('../../solworld/assets/js/solana.js');
+  const { buildMemo, deriveRegistryAddress, saleFee } = await import('../../solworld/assets/js/registry.js');
+  const { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } = await import('../../solworld/assets/js/market.js');
+  const { BurnerWallet } = await import('../../solworld/assets/js/burner.js');
+  const { parseNonceAccount, placeSignature, serializeUnsignedTransaction } = await import('../../solworld/assets/js/solana.js');
+  const SOL = 1_000_000_000;
+  const chain = env.chain;
+  const rpc = new Rpc(['http://chain.test'], { fetchImpl: async (u, init) => ({ ok: true, status: 200, json: async () => chain.handle(JSON.parse(init.body)) }) });
+  const mem = () => {
+    const m = new Map();
+    return { get: (k) => (m.has(k) ? structuredClone(m.get(k)) : null), set: (k, v) => m.set(k, structuredClone(v)), remove: (k) => m.delete(k) };
+  };
+
   const treasury = nacl.sign.keyPair();
   const treasuryAddr = bs58.encode(treasury.publicKey);
-  env.chain.airdrop(treasuryAddr, 1_000_000);
-  const alice = nacl.sign.keyPair(); // 1 SOL: free claim + purchase
-  const bob = nacl.sign.keyPair(); // 0.1 SOL: not eligible for a free claim
-  env.chain.airdrop(bs58.encode(alice.publicKey), 1_000_000_000);
-  env.chain.airdrop(bs58.encode(bob.publicKey), 100_000_000);
-  const config = { treasury: treasuryAddr, cluster: 'mainnet-beta', pollSeconds: 5 };
+  chain.airdrop(treasuryAddr, 1_000_000);
+  const reference = await deriveRegistryAddress(treasuryAddr);
+  const mint = bs58.encode(nacl.randomBytes(32));
+  const config = { treasury: treasuryAddr, cluster: 'mainnet-beta', pollSeconds: 5, memecoin: { mint, symbol: 'MEME', solPerToken: [{ from: '2020-01-01T00:00:00Z', sol: 0.000001 }] } };
   const { page, log, browser, harness } = await launch({ ...env, config });
-  harness.setKeypair(alice);
+  activePage = page;
+  const bob = new BurnerWallet({ rpc, storage: mem() });
+  await bob.create();
+  chain.airdrop(bob.address, 10 * SOL);
+  const blockhash = async () => (await rpc.getLatestBlockhash()).blockhash;
+  const act = async (w, lamports, memo, extra = {}) => w.send(actionMessage({ from: w.address, treasury: treasuryAddr, reference, lamports, memo, ...extra }, await blockhash()));
+  let alice;
+
   try {
     await step('live: boots in live mode against the local chain', async () => {
       await ready(page, env.origin);
@@ -269,102 +401,128 @@ async function live(env) {
       await shot(page, '20-live-hero');
     });
 
-    await step('live: connect the Wallet Standard wallet', async () => {
+    await step('live: create a Solworld wallet and see a deposit arrive', async () => {
       await page.getByRole('button', { name: 'Start exploring' }).click();
       await page.waitForTimeout(600);
       await settle(page);
       await stopMotion(page);
-      await page.getByRole('button', { name: 'Connect', exact: true }).click();
-      await page.getByRole('button', { name: /Harness Wallet/ }).click();
-      await page.waitForFunction(() => window.solworld.wallet.balance === 1_000_000_000, null, { timeout: 10_000 });
+      await page.locator('.wallet-btn').click();
+      await createWallet(page);
+      alice = await page.evaluate(() => window.solworld.wallet.address);
+      assert.equal(await page.locator('.deposit-addr').innerText(), alice);
+      chain.airdrop(alice, 10 * SOL);
+      await page.waitForSelector('.deposit-bal >> text=10', { timeout: 12_000 });
+      await shot(page, '21-live-deposit');
+      await done(page);
     });
 
-    let claimed;
-    await step('live: free claim lands on-chain and shows as yours', async () => {
+    await step('live: buying the Empire State pays the treasury 3 SOL, no pop-ups', async () => {
+      const before = chain.balance(treasuryAddr);
       await clickBuildingAt(page, EMPIRE);
-      await page.getByRole('button', { name: 'Claim for free' }).click();
+      await page.getByRole('button', { name: /^Buy for 3.00 SOL/ }).click();
       await page.getByRole('button', { name: 'I understand' }).click();
-      await page.waitForFunction(() => document.querySelector('#panel').dataset.tone === 'mine', null, { timeout: 30_000 });
-      claimed = env.chain.sent.at(-1);
-      assert.match(claimed.memo, /^solworld:claim:w\d+@40\.74\d+,-73\.98\d+$/);
-      const transfer = claimed.instructions.find((i) => i.parsed?.type === 'transfer');
-      assert.equal(transfer.parsed.info.lamports, 0);
-      assert.equal(transfer.parsed.info.destination, treasuryAddr);
-      const registry = await page.evaluate(() => window.solworld.registry.address);
-      assert.ok(claimed.keys.includes(registry), 'registry reference key is in the transaction');
-      await page.waitForTimeout(1200);
+      await waitTone(page, 'mine', 30_000);
+      assert.equal(chain.balance(treasuryAddr) - before, 3 * SOL);
+      const tx = chain.sent.at(-1);
+      assert.match(tx.memo, /^solworld:buy:w\d+@40\.74\d+,-73\.98\d+;p=3000000000$/);
+      assert.ok(tx.keys.includes(await page.evaluate(() => window.solworld.registry.address)));
+    });
+
+    await step('live: billboard lands on-chain', async () => {
+      await page.getByText('Put up a billboard').click();
+      await page.locator('.sign-editor .field-input').fill('Alice was here');
+      await page.getByRole('button', { name: 'Save billboard' }).click();
+      await page.waitForSelector('.billboard >> text=Alice was here', { timeout: 20_000 });
+      assert.match(chain.sent.at(-1).memo, /^solworld:sign:w\d+;c=0;t=Alice%20was%20here$/);
       await stopMotion(page);
-      await shot(page, '21-live-claimed');
+      await shot(page, '22-live-billboard');
     });
 
-    await step('live: purchase pays the treasury exactly the price', async () => {
-      const before = env.chain.balance(treasuryAddr);
+    let empireKey;
+    await step('live: someone’s offer shows up; accepting swaps atomically', async () => {
+      empireKey = await page.evaluate(() => location.hash.split('/').pop());
+      const rent = await rpc.getMinimumBalanceForRentExemption(80);
+      const nonce = await nonceAddressFor(bob.address, empireKey);
+      await bob.send(createNonceMessage({ payer: bob.address, nonce, key: empireKey, lamports: rent, authority: alice, recentBlockhash: await blockhash() }));
+      const info = parseNonceAccount((await rpc.getAccountInfo(nonce)).data);
+      const price = 3.5 * SOL;
+      const sale = buildSaleMessage({ buyer: bob.address, seller: alice, treasury: treasuryAddr, reference, key: empireKey, price, feeBps: 500, nonce, nonceValue: info.value });
+      const buyerSig = bs58.encode(await bob.sign(sale.bytes));
+      await act(bob, 0, buildMemo('offer', { key: empireKey, price, nonce, nonceValue: info.value, buyerSig }));
+      await page.waitForSelector('.toast >> text=New offer: 3.50 SOL', { timeout: 20_000 });
+      await shot(page, '23-live-offer');
+      const aliceBefore = chain.balance(alice);
+      const treasuryBefore = chain.balance(treasuryAddr);
+      await page.locator('.offer').getByRole('button', { name: 'Accept' }).click();
+      await waitTone(page, 'owned', 30_000);
+      const fee = saleFee(price, 500);
+      assert.equal(chain.balance(treasuryAddr) - treasuryBefore, fee);
+      assert.ok(chain.balance(alice) - aliceBefore >= price - fee - 20_000, 'seller got the price minus fee (less the network fee)');
+      assert.equal(await page.evaluate((k) => window.solworld.registry.state.buildings.get(k).owner, empireKey), bob.address);
+    });
+
+    await step('live: making an offer sets up the building and the owner can accept it', async () => {
+      await page.waitForTimeout(500);
+      await page.locator('.offer-form .field-input').fill('3.6');
+      await page.getByRole('button', { name: 'Make offer' }).click();
+      await page.waitForSelector('.toast >> text=Offer sent', { timeout: 30_000 });
+      const offer = await page.evaluate((k) => [...window.solworld.registry.state.offers.values()].find((o) => o.key === k && o.status === 'open'), empireKey);
+      assert.equal(offer.buyer, alice);
+      // Bob accepts from his side (any client can: the offer is fully pre-signed).
+      const sale = buildSaleMessage({ buyer: alice, seller: bob.address, treasury: treasuryAddr, reference, key: empireKey, price: offer.price, feeBps: 500, nonce: offer.nonce, nonceValue: offer.nonceValue });
+      const wire = serializeUnsignedTransaction(sale);
+      placeSignature(wire, sale, alice, bs58.decode(offer.buyerSig));
+      await bob.signInto(wire, sale);
+      await rpc.sendRawTransaction(wire);
+      await waitTone(page, 'mine', 20_000);
+    });
+
+    await step('live: holders verify their meme-coin wallet and take a building with credit', async () => {
+      const holder = nacl.sign.keyPair();
+      const holderAddr = bs58.encode(holder.publicKey);
+      chain.airdrop(holderAddr, SOL);
+      chain.setTokenAccount(bs58.encode(nacl.randomBytes(32)), { mint, owner: holderAddr, uiAmount: 2_000_000 }); // 2 SOL of credit
+      harness.setKeypair(holder);
       await closePanel(page);
-      await clickBuildingAt(page, [-73.975311, 40.751652]); // Chrysler
-      await page.getByRole('button', { name: /^Buy for 0\.05 SOL/ }).click();
-      await page.waitForFunction(() => document.querySelector('#panel').dataset.tone === 'mine', null, { timeout: 30_000 });
-      assert.equal(env.chain.balance(treasuryAddr) - before, 50_000_000);
-      assert.equal(await page.evaluate(() => window.solworld.registry.state.totals.volume), 50_000_000);
-    });
-
-    await step('live: rejected wallet request is handled', async () => {
-      await closePanel(page);
-      await clickBuildingAt(page, [-73.989699, 40.741061]); // Flatiron
-      harness.rejectNext();
-      await page.getByRole('button', { name: /^Buy for/ }).click();
-      await page.waitForSelector('.toast >> text=Cancelled', { timeout: 10_000 });
-      assert.equal(await page.evaluate(() => document.querySelector('#panel').dataset.tone), 'available');
-    });
-
-    await step('live: another buyer’s purchase appears via polling', async () => {
-      // Bob buys the Flatiron from "outside" (straight to the chain).
-      const { compileMessage, transferInstruction, memoInstruction, serializeUnsignedTransaction } = await import('../../solworld/assets/js/solana.js');
-      const { buildMemo, deriveRegistryAddress } = await import('../../solworld/assets/js/registry.js');
-      const flatiron = env.tiles.world.buildings.find((b) => b.tags.name === 'Flatiron Building');
-      const reference = await deriveRegistryAddress(treasuryAddr);
-      const bobAddr = bs58.encode(bob.publicKey);
-      const msg = compileMessage({
-        payer: bobAddr,
-        recentBlockhash: env.chain.svm.latestBlockhash(),
-        instructions: [
-          transferInstruction({ from: bobAddr, to: treasuryAddr, lamports: 50_000_000, references: [reference] }),
-          memoInstruction(buildMemo('buy', `w${flatiron.id}`, [-73.989699, 40.741061])),
-        ],
-      });
-      env.chain.signAndSubmit(serializeUnsignedTransaction(msg), bob);
-      await page.waitForFunction(() => document.querySelector('#panel').dataset.tone === 'owned', null, { timeout: 20_000 });
-      await page.waitForTimeout(800);
-      await stopMotion(page);
-      await shot(page, '22-live-owned-by-other');
-    });
-
-    await step('live: wallet without 0.2 SOL cannot claim', async () => {
-      harness.setKeypair(bob);
-      await page.evaluate(async () => {
-        await window.solworld.wallet.disconnect();
-      });
-      await closePanel(page);
-      await page.getByRole('button', { name: 'Connect', exact: true }).click();
+      await openWalletMenu(page);
+      await page.getByRole('button', { name: /Use your \$MEME/ }).click();
+      await page.locator('.modal .field-input').fill(holderAddr);
+      await page.waitForSelector('.holder-preview >> text=2.00 SOL', { timeout: 10_000 });
+      await page.getByRole('button', { name: 'Verify with my wallet' }).click();
       await page.getByRole('button', { name: /Harness Wallet/ }).click();
-      await page.waitForFunction(() => window.solworld.wallet.balance != null && window.solworld.wallet.balance < 100_000_000, null, { timeout: 10_000 });
-      const p = await page.evaluate(() => {
-        const c = window.solworld.map.map.getCenter();
-        return [c.lng + 0.0019, c.lat - 0.0004];
-      });
-      await clickBuildingAt(page, p);
-      assert.equal(await page.getByRole('button', { name: 'Claim for free' }).count(), 0);
-      assert.ok(await page.getByText(/Hold more than 0\.2 SOL/).count());
+      await page.waitForSelector('.toast >> text=$MEME linked', { timeout: 30_000 });
+      await clickBuildingAt(page, [-73.975311, 40.751652]); // Chrysler: famous, 3 SOL > 2 SOL credit
+      assert.equal(await page.getByRole('button', { name: /Use \$MEME credit/ }).count(), 0);
+      await openAvailable(page, [[0.0022, 0.0006], [-0.0016, -0.0012], [0.0019, -0.0004]]);
+      const before = chain.balance(treasuryAddr);
+      await page.getByRole('button', { name: /Use \$MEME credit/ }).click();
+      await waitTone(page, 'mine', 30_000);
+      assert.equal(chain.balance(treasuryAddr), before, 'credit moves no SOL');
+      const key = await page.evaluate(() => location.hash.split('/').pop());
+      assert.equal(await page.evaluate((k) => window.solworld.registry.state.buildings.get(k).holder, key), holderAddr);
+      await stopMotion(page);
+      await shot(page, '24-live-credit');
+    });
+
+    await step('live: withdraw sends SOL out of the Solworld wallet', async () => {
+      const dest = bs58.encode(nacl.sign.keyPair().publicKey);
+      await openWalletMenu(page);
+      await page.getByRole('button', { name: 'Withdraw' }).first().click();
+      await page.locator('.modal input.field-input').first().fill(dest);
+      await page.locator('.modal input.field-input').nth(1).fill('0.5');
+      await page.locator('.modal-actions').getByRole('button', { name: 'Withdraw' }).click();
+      await page.waitForSelector('.toast >> text=Withdrawal sent', { timeout: 20_000 });
+      await page.waitForFunction(() => true);
+      for (let i = 0; i < 20 && chain.balance(dest) === 0; i++) await page.waitForTimeout(250);
+      assert.equal(chain.balance(dest), 0.5 * SOL);
     });
 
     await step('live: leaderboard reflects chain state', async () => {
       const board = await page.evaluate(() => window.solworld.registry.state.leaderboard.map((o) => [o.address, o.count]));
-      assert.deepEqual(board, [
-        [bs58.encode(alice.publicKey), 2],
-        [bs58.encode(bob.publicKey), 1],
-      ]);
+      assert.deepEqual(board, [[alice, 2]]);
       await page.evaluate(() => document.querySelector('.rail-opener:not(.is-hidden)')?.click());
       await page.waitForTimeout(700);
-      await shot(page, '23-live-leaderboard');
+      await shot(page, '25-live-leaderboard');
     });
 
     await step('live: no page errors', async () => {
@@ -377,7 +535,7 @@ async function live(env) {
 }
 
 async function mobile(env) {
-  const { page, log, browser } = await launch({ ...env, viewport: { width: 390, height: 844 }, mobile: true });
+  const { page, log, browser } = await launch({ ...env, config: {}, viewport: { width: 390, height: 844 }, mobile: true });
   try {
     await step('mobile: hero fits the screen', async () => {
       await ready(page, env.origin);

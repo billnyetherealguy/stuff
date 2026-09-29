@@ -1,6 +1,6 @@
 // Loader, hero, stats, map controls, hints, status pill and info modals.
 import { FEATURED } from '../cities.js';
-import { avatar, copyText, countTo, fmtInt, fmtSol, h, shortAddr, timeAgo } from '../util.js';
+import { avatar, countTo, fmtInt, fmtSol, h, shortAddr, timeAgo } from '../util.js';
 import { BRAND_MARK, icon } from './icons.js';
 import { openModal } from './feedback.js';
 
@@ -64,15 +64,18 @@ export class Hero {
         h(
           'p',
           { class: 'hero-sub' },
-          'Tap any building in the world, see who owns it, and make it yours with SOL. Hold more than ',
-          h('b', null, `${settings.freeClaimMinSol} SOL`),
-          ' and your first building is free.',
+          'Tap any building in the world, see who owns it, and make it yours with SOL — from ',
+          h('b', null, '0.001 SOL'),
+          ' for a quiet corner to ',
+          h('b', null, '3 SOL'),
+          ' for a landmark. Sell to the highest offer, put up your billboard',
+          settings.memecoinView ? [', or use your ', h('b', null, `$${settings.memecoinView.symbol}`), ' holdings as credit.'] : '.',
         ),
         h(
           'div',
           { class: 'hero-cta' },
           h('button', { class: 'btn btn--primary btn--lg', onclick: () => this.ctx.onExplore() }, 'Start exploring', h('span', { svg: icon('arrowRight', { size: 18 }) })),
-          h('button', { class: 'btn btn--ghost btn--lg', onclick: () => this.ctx.onConnect() }, h('span', { svg: icon('wallet', { size: 18 }) }), 'Connect wallet'),
+          h('button', { class: 'btn btn--ghost btn--lg', onclick: () => this.ctx.onConnect() }, h('span', { svg: icon('wallet', { size: 18 }) }), 'Get a wallet'),
         ),
         h('div', { class: 'hero-stats' }, statEl('buildings', 'buildings owned'), statEl('owners', 'landowners'), statEl('volume', 'SOL volume')),
         h(
@@ -176,7 +179,7 @@ export function renderNetPill(root, { settings, registry }) {
 export function openHelp(ctx) {
   const { settings, registry } = ctx;
   const step = (n, title, body) => h('li', { class: 'step' }, h('span', { class: 'step-n' }, n), h('div', null, h('b', null, title), h('p', null, body)));
-  const priceNow = fmtSol(ctx.currentPrice());
+  const coin = settings.memecoinView;
   openModal({
     eyebrow: 'Solworld',
     title: 'How it works',
@@ -187,15 +190,17 @@ export function openHelp(ctx) {
       h(
         'ol',
         { class: 'steps' },
-        step('1', 'Find any building on Earth', 'Search a city or fly around the globe. Every building mapped on OpenStreetMap — hundreds of millions of them — is on Solworld.'),
-        step('2', `Buy it for ${priceNow} SOL`, 'Tap a building and approve one transaction in your wallet. It’s yours the moment it confirms, and everyone sees your address on it.'),
-        step('3', `Or claim one free`, `If your wallet holds more than ${settings.freeClaimMinSol} SOL, your first building costs nothing but the network fee (about 0.00001 SOL).`),
+        step('1', 'Find any building on Earth', 'Search a city or fly around the globe. Every building mapped on OpenStreetMap — hundreds of millions — is on Solworld. Zoom right in and the city lights up.'),
+        step('2', 'Get your Solworld wallet', 'We make one for you in this browser (only you hold its key). Deposit SOL from Phantom, an exchange or a QR scan, and back up the key.'),
+        step('3', 'Buy it', 'Quiet corners start at 0.001 SOL; busy downtowns, tall towers and famous landmarks cost more, up to 3 SOL. One tap, no pop-ups.'),
+        step('4', 'Use it, sell it', `Put up a glowing billboard everyone sees. Other players send offers; accept one and the swap happens on-chain instantly (${settings.feeBps / 100}% market fee).`),
+        coin ? step('5', `Hold $${coin.symbol}? It’s credit`, `Paste the wallet holding your $${coin.symbol} and sign once to prove it’s yours. Its value in SOL becomes credit you spend on buildings.`) : null,
       ),
       h(
         'div',
         { class: 'help-grid' },
-        h('div', { class: 'help-card' }, h('span', { svg: icon('shield', { size: 18 }) }), h('b', null, 'On-chain, no middleman'), h('p', null, 'There’s no Solworld database. Every purchase is a Solana transaction, and this page rebuilds the map of owners from the chain. Anyone can verify it.')),
-        h('div', { class: 'help-card' }, h('span', { svg: icon('trophy', { size: 18 }) }), h('b', null, 'First come, first served'), h('p', null, 'Each building has exactly one owner. If two people buy the same building at the same moment, the first transaction on-chain wins and the other payment is refundable.')),
+        h('div', { class: 'help-card' }, h('span', { svg: icon('shield', { size: 18 }) }), h('b', null, 'On-chain, no middleman'), h('p', null, 'There’s no Solworld database. Every purchase, offer and sale is a Solana transaction, and this page rebuilds the map of owners from the chain. Anyone can verify it.')),
+        h('div', { class: 'help-card' }, h('span', { svg: icon('trophy', { size: 18 }) }), h('b', null, 'Safe trades'), h('p', null, 'An offer is a pre-signed swap. When the owner accepts, payment and ownership move in one transaction, and every other offer on that building expires automatically.')),
       ),
       settings.live
         ? h(
@@ -206,13 +211,13 @@ export function openHelp(ctx) {
             h('span', null, 'Treasury'),
             h('a', { class: 'mono', href: settings.explorer.account(settings.treasury), target: '_blank', rel: 'noopener' }, shortAddr(settings.treasury, 6, 6)),
           )
-        : h('p', { class: 'help-demo' }, 'This site is in demo mode: buying and claiming are simulated in your browser so you can try everything without spending SOL.'),
+        : h('p', { class: 'help-demo' }, 'This site is in demo mode: buying, offers and sales are simulated in your browser with pretend SOL.'),
       h(
         'p',
         { class: 'modal-fine' },
         'Solworld buildings are virtual collectibles in a game. Owning one gives no rights to the real property, and Solworld isn’t affiliated with the buildings, their owners or tenants. Purchases are final and are not an investment. Map data © OpenStreetMap contributors.',
       ),
-      h('button', { class: 'link-btn modal-link', onclick: () => ctx.onOperator() }, 'Operator & refunds'),
+      h('button', { class: 'link-btn modal-link', onclick: () => ctx.onOperator() }, 'Operator tools'),
     ),
     actions: [{ label: 'Got it', kind: 'primary' }],
   });
@@ -256,12 +261,26 @@ export function ensureConsent(ctx) {
 export function openOperator(ctx) {
   const { settings, registry } = ctx;
   const state = registry.state;
-  const refundable = state.voids.filter((v) => v.paid > 0);
-  const reasons = { taken: 'Building already owned', underpaid: 'Paid less than the price', 'claim-used': 'Second free claim', balance: 'Balance under the free-claim minimum' };
+  const reasons = { taken: 'Building already owned', underpaid: 'Paid less than the price', revoked: 'Revoked by you', 'not-owner': 'Seller no longer owned it', 'bad-sale': 'Malformed sale', unlinked: 'Holder not linked', 'no-credit': 'Not enough credit' };
+  const owed = state.voids.filter((v) => v.paid > (state.refunded.get(v.sig) || 0) && v.reason !== 'not-owner' && v.reason !== 'bad-sale');
   const row = (k, v) => h('div', { class: 'op-row' }, h('span', null, k), h('b', null, v));
+  const auditBox = h('div', { class: 'op-refunds' }, h('p', { class: 'op-empty' }, 'Checks every purchase against today’s price formula and flags ones that paid far less (someone crafting cheap transactions by hand).'));
+  const signs = [...state.buildings.values()].filter((b) => b.sign?.text).sort((a, b) => b.sign.time - a.sign.time);
+  const connected = () => ctx.operatorReady();
+
+  const refundRow = (v) =>
+    h(
+      'div',
+      { class: 'op-refund' },
+      avatar(v.buyer || v.actor, 26),
+      h('div', { class: 'grow' }, h('div', { class: 'mono' }, shortAddr(v.buyer || v.actor, 6, 6)), h('small', null, `${reasons[v.reason] || v.reason} · ${v.key || ''} · ${timeAgo(v.time)}`)),
+      h('b', { class: 'mono' }, `${fmtSol(v.paid - (state.refunded.get(v.sig) || 0))} SOL`),
+      settings.live ? h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => ctx.onRefund(v, e.currentTarget) }, 'Refund') : null,
+    );
+
   openModal({
     eyebrow: settings.live ? 'Live' : 'Demo',
-    title: 'Operator',
+    title: 'Operator tools',
     size: 'lg',
     content: h(
       'div',
@@ -269,12 +288,12 @@ export function openOperator(ctx) {
       h(
         'div',
         { class: 'op-grid' },
-        row('Revenue', `${fmtSol(state.totals.volume)} SOL`),
+        row('Your revenue', `${fmtSol(state.totals.revenue)} SOL`),
+        row('Trading volume', `${fmtSol(state.totals.volume)} SOL`),
         row('Buildings owned', fmtInt(state.totals.buildings)),
-        row('Paid purchases', fmtInt(state.totals.buys)),
-        row('Free claims', fmtInt(state.totals.claims)),
-        row('Price', settings.prices.map((p) => `${p.sol} SOL${p.from ? ` from ${new Date(p.from * 1000).toISOString().slice(0, 10)}` : ''}`).join(' → ')),
-        row('Free claim', `> ${settings.freeClaimMinSol} SOL held`),
+        row('Sales between players', fmtInt(state.totals.sales)),
+        row('Taken with credit', fmtInt(state.totals.holds)),
+        row('Market fee', `${settings.feeBps / 100}%`),
       ),
       settings.live
         ? h(
@@ -282,27 +301,25 @@ export function openOperator(ctx) {
             { class: 'op-keys' },
             h('div', null, h('span', null, 'Treasury'), h('code', null, settings.treasury)),
             h('div', null, h('span', null, 'Registry reference'), h('code', null, registry.address)),
+            h('p', { class: 'modal-fine' }, 'Refunds, revokes and billboard removals are signed by your treasury wallet (Phantom asks you to approve each one).', connected() ? '' : ' You’ll be asked to connect it.'),
           )
         : null,
-      h('h3', { class: 'op-h' }, `Refunds owed (${refundable.length})`),
-      refundable.length
+      h('h3', { class: 'op-h' }, `Refunds owed (${owed.length})`),
+      owed.length ? h('div', { class: 'op-refunds' }, owed.map(refundRow)) : h('p', { class: 'op-empty' }, 'Nothing to refund. When two people pay for the same building at once, the second payment shows up here.'),
+      h('h3', { class: 'op-h' }, 'Price audit'),
+      auditBox,
+      h('button', { class: 'btn btn--ghost btn--sm', onclick: async (e) => ctx.onAudit(auditBox, e.currentTarget) }, 'Run price audit'),
+      h('h3', { class: 'op-h' }, `Billboards (${signs.length})`),
+      signs.length
         ? h(
             'div',
             { class: 'op-refunds' },
-            refundable.map((v) =>
-              h(
-                'div',
-                { class: 'op-refund' },
-                avatar(v.buyer, 26),
-                h('div', { class: 'grow' }, h('div', { class: 'mono' }, shortAddr(v.buyer, 6, 6)), h('small', null, `${reasons[v.reason] || v.reason} · ${v.key} · ${timeAgo(v.time)}`)),
-                h('b', { class: 'mono' }, `${fmtSol(v.paid)} SOL`),
-                h('button', { class: 'mini-btn', title: 'Copy address', svg: icon('copy', { size: 13 }), onclick: () => copyText(v.buyer).then(() => ctx.toast({ title: 'Address copied', tone: 'success', duration: 1500 })) }),
-                settings.live && !String(v.sig).startsWith('demo') ? h('a', { class: 'mini-btn', href: settings.explorer.tx(v.sig), target: '_blank', rel: 'noopener', title: 'Transaction', svg: icon('external', { size: 13 }) }) : null,
-              ),
+            signs.slice(0, 50).map((b) =>
+              h('div', { class: 'op-refund' }, h('div', { class: 'grow' }, h('div', null, `“${b.sign.text}”`), h('small', null, `${b.key} · ${shortAddr(b.owner)} · ${timeAgo(b.sign.time)}`)), settings.live ? h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => ctx.onRevoke(b.sign.sig, 0, b.owner, e.currentTarget) }, 'Remove') : null),
             ),
           )
-        : h('p', { class: 'op-empty' }, 'Nothing to refund. When two people pay for the same building, the second payment shows up here so you can send it back from the treasury wallet.'),
-      h('p', { class: 'modal-fine' }, 'To change the price or treasury, edit config.js and redeploy. Add new prices with a start date instead of editing old ones, so past purchases stay valid.'),
+        : h('p', { class: 'op-empty' }, 'No billboards yet.'),
+      h('p', { class: 'modal-fine' }, 'To change the treasury, fee or meme-coin price, edit config.js and redeploy.'),
     ),
     actions: [{ label: 'Close', kind: 'ghost' }],
   });

@@ -2,53 +2,66 @@
 
 **Every building on Earth. Own it on Solana.**
 
-Solworld is a black, Tesla-style 3D map of the whole planet where every building is clickable. Tap one to see what it actually looks like (a satellite close-up, a real photo when there is one, and a Street View link), who owns it, and buy it with SOL. Wallets holding more than 0.2 SOL can claim one building of their choice for free. A live leaderboard shows who owns the most.
+Solworld is a black, Tesla-style 3D map of the whole planet where every building is clickable. Tap one to see what it looks like (a satellite close-up, a real photo when there is one, and a Street View link) and who owns it. You can buy it with SOL, take it with meme-coin credit, sell it to whoever makes the best offer, and put your own glowing billboard on it.
 
 ![Solworld](solworld/og.png)
 
-- **The whole world:** hundreds of millions of OpenStreetMap buildings on a spinning globe, extruded in 3D.
-- **Real ownership:** every purchase is a Solana transaction. There is no database and no server, so anyone can verify who owns what.
-- **Instant to host:** it's a static website with nothing to build or install. Put it on Netlify, Vercel, Cloudflare Pages or any web host.
+- **The whole world:** hundreds of millions of OpenStreetMap buildings on a spinning globe, extruded in 3D. Up close, buildings get lit windows and the ground switches to real satellite imagery.
+- **A wallet for everyone:** each visitor gets their own Solworld wallet, created in their browser. They deposit SOL to it (QR code, address, or straight from Phantom) and every action after that is one tap, with no wallet pop-ups.
+- **Real ownership:** every action is a Solana transaction. There is no database and no server, so anyone can verify who owns what.
+- **Instant to host:** it's a static website with nothing to build or install.
 
 ---
 
 ## Go live
 
-### 1. Put your wallet address in `solworld/config.js`
+### 1. `solworld/config.js`
 
-Open [`solworld/config.js`](solworld/config.js) on GitHub, click the pencil icon, and paste your **public** Solana wallet address into `treasury`:
+Your wallet is already in place:
 
 ```js
-treasury: "YOUR_WALLET_ADDRESS",
+treasury: "8tiwEgFFPdkMRhPMZtxHRwvopwf1PeqzgMpVMq7GKkpV",
 ```
 
-Every purchase is paid straight to this wallet. Copy the address from your wallet app ("Copy address"); it's 32–44 characters long.
+Every building purchase, and 5% of every resale between players (`marketFeePercent`), is paid straight to this wallet.
 
 > **Never put a private key or seed phrase in this file.** Everyone can read it. Solworld refuses to start if it spots a private key there.
 
-If you leave `treasury` empty, the site runs in **demo mode**. Everything works, but purchases are simulated and no SOL moves. That's a good way to try it first.
+Set `treasury: ""` to run in **demo mode**, where everything works but nothing real moves.
 
-### 2. Deploy (pick one)
+### 2. When your meme coin launches
 
-**Netlify (recommended)**
-1. Go to [app.netlify.com](https://app.netlify.com), then **Add new site → Import an existing project → GitHub**.
-2. Pick this repository and the branch with Solworld on it.
-3. Click **Deploy**. Nothing else is needed: [`netlify.toml`](netlify.toml) tells Netlify to publish the `solworld` folder.
+Fill in `memecoin` in `config.js` and redeploy:
 
-You get a live URL like `https://solworld-xyz.netlify.app` in about 30 seconds. Rename it under *Site configuration → Change site name*, or attach your own domain.
+```js
+memecoin: {
+  mint: "YOUR_TOKEN_MINT_ADDRESS",
+  symbol: "TICKER",
+  solPerToken: [
+    { from: "2026-10-01T00:00:00Z", sol: 0.0000001 },   // what ONE token is worth in SOL
+  ],
+},
+```
 
-**Netlify Drop (no GitHub connection)**
-Download this repo as a ZIP (**Code → Download ZIP**), unzip it, and drag the `solworld` folder onto [app.netlify.com/drop](https://app.netlify.com/drop).
+Holders paste the wallet that holds the coin and approve **one signature** with it. The signature proves the wallet is theirs and moves nothing. That wallet's coins, times `sol`, become building credit. For example, coins worth 0.56 SOL give 0.56 SOL of buildings. Credit is used up as buildings are taken, and it can't be spent twice.
 
-**Vercel**
-Go to [vercel.com/new](https://vercel.com/new), import this repository, and click **Deploy**. [`vercel.json`](vercel.json) already points Vercel at the `solworld` folder.
+The token price is **the number you set**, not a live market price. That keeps every visitor's ownership records identical. To update it, **add a new line** with the date it starts. Don't edit old lines, because past credit is checked against the price at the time.
 
-**Anywhere else**
-Upload the contents of `solworld/` to any static host (Cloudflare Pages, GitHub Pages, S3…). It must be served over HTTPS.
+Until `mint` is filled in, the meme-coin option stays hidden.
 
-### 3. Before real traffic (recommended)
+### 3. Deploy (pick one)
 
-Add your own Solana RPC endpoint in `config.js`. The free public endpoint is rate-limited, and a free [Helius](https://helius.dev) key is plenty to start:
+**Netlify (recommended):** at [app.netlify.com](https://app.netlify.com), go to **Add new site → Import an existing project → GitHub**, pick this repository and branch, then click **Deploy**. [`netlify.toml`](netlify.toml) already publishes the `solworld` folder.
+
+**Netlify Drop (no GitHub):** download this repo as a ZIP, unzip it, and drag the `solworld` folder onto [app.netlify.com/drop](https://app.netlify.com/drop).
+
+**Vercel:** import the repository at [vercel.com/new](https://vercel.com/new). [`vercel.json`](vercel.json) is already set up.
+
+**Anywhere else:** upload the contents of `solworld/` to any static host that serves over HTTPS.
+
+### 4. Before real traffic (recommended)
+
+The free public Solana RPC is rate-limited. Add your own endpoint in `config.js`; a free [Helius](https://helius.dev) key is plenty to start:
 
 ```js
 rpc: ["https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"],
@@ -58,47 +71,76 @@ rpc: ["https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"],
 
 ## How it works
 
-### Buying and claiming
+### Prices: 0.001 to 3 SOL
 
-Every action is **one Solana transaction** that the buyer approves in their own wallet (Phantom, Solflare, Backpack or any Wallet Standard wallet). It contains:
+Prices are automatic and deterministic, computed from public OpenStreetMap data, so anyone can re-check them. A building starts at **0.001 SOL** and is multiplied by:
 
-1. a SOL transfer from the buyer to your treasury. It's 0 SOL for a free claim, which costs only the ~0.00001 SOL network fee.
-2. a "registry" reference key on that transfer, derived from your treasury address, so every Solworld transaction can be listed from the chain.
-3. a memo such as `solworld:buy:w34633854@40.748440,-73.985664`: the action, the OpenStreetMap building ID and its location.
+| Factor | Effect |
+| --- | --- |
+| Busy area | Up to ~40× in the centre of big hubs (New York, London, Tokyo, Dubai…), fading with distance |
+| Fame | 25× for landmarks with a Wikipedia/Wikidata entry, 6× for attractions or historic sites, 2× for named buildings |
+| Height | +1× for every 40 m |
+| Footprint | 0.6× to 6× by ground area |
 
-Each visitor's browser reads those transactions from Solana and applies the same rules, so everyone sees the same owners:
+The result is capped at **3 SOL**. A shed in the countryside costs 0.001 SOL, while the Empire State Building, Burj Khalifa or Eiffel Tower costs 3 SOL. Each building's panel shows the factors that make up its price.
+
+### The Solworld wallet
+
+- It's created in the visitor's browser the first time they need it. Only the visitor has the key; you (the operator) never do.
+- They deposit from any exchange or wallet by QR code or address, or with one click from Phantom or Solflare.
+- They can **withdraw** at any time, **back up** the key (it also imports into Phantom as "Import private key"), and **restore** it on another device.
+- The key lives in that browser's storage. If someone clears their browser without a backup, the wallet is lost, so the site keeps reminding them to back it up.
+
+### Buying, selling, offers
+
+- **Buy:** one transaction pays the building's price to your treasury, with a memo naming the building (e.g. `solworld:buy:w34633854@40.748440,-73.985664;p=3000000000`).
+- **Offers:** on a building someone owns, anyone can make an offer. The offer is a fully **pre-signed sale**: the buyer signs a transaction that pays the owner (minus the 5% fee) and pays you the fee, and publishes it.
+- **Accept:** the owner taps *Accept*. Their Solworld wallet co-signs and sends it, and the SOL and the building swap **atomically in one transaction**. Nobody can take the SOL without handing over the building, or the reverse.
+- **Safety:** each building has a small on-chain "nonce" account controlled by its current owner. A sale advances it, which invalidates every other outstanding offer on that building, and hands control to the new owner. The first offer on a building pays ~0.0015 SOL of rent to set it up.
+- Offers stay valid while the buyer keeps enough SOL in their wallet. *Cancel* hides an offer everywhere. A buyer who wants to be 100% sure an old offer can never execute can keep their balance below the offer amount.
+
+### Billboards (what owning a building is for)
+
+Owners can put up a billboard: a short message (up to 60 characters) in one of 8 colors. It glows above the building on the map for every visitor and shows in the building's panel. Use it for a name, a brand or a $TICKER. It's recorded on-chain and changes hands with the building.
+
+### Rules everyone's browser applies
+
+Each visitor's browser reads the Solworld transactions from Solana and applies the same rules, so everyone sees the same owners:
 
 | Rule | Detail |
 | --- | --- |
-| One owner per building | The first valid transaction on-chain wins. |
-| Price | `prices` in `config.js` (default **0.05 SOL**). Paying less doesn't count. |
-| Free building | Once per wallet, for wallets holding **more than** `freeClaimMinSol` (default 0.2 SOL). This is checked against the balance recorded in the transaction itself. |
-| Void payments | If two people pay for the same building at the same moment, the second payment is listed under **Operator & refunds** (in *How it works*, or at `/#/operator`) so you can send it back. |
+| One owner per building | The first valid purchase wins. A second payment for the same building is listed for refund. |
+| Price | Paid at least the price in the memo, and never less than 0.001 SOL. The operator's *price audit* flags anyone who underpaid versus the real building. |
+| Credit | Only with a verified holder wallet, and only up to that wallet's coin balance **recorded in the transaction itself** × your `solPerToken`. |
+| Sales | Must be co-signed by the current owner and pay them the price minus the fee, plus the fee to you. |
+| Billboards | Only the current owner's billboard counts. |
 
-To **change the price** later, add a new line with the date it starts. Don't edit old lines, because past purchases are checked against the price that applied at the time:
+### Operator tools
 
-```js
-prices: [
-  { from: "2026-01-01T00:00:00Z", sol: 0.05 },
-  { from: "2026-12-01T00:00:00Z", sol: 0.1 },
-],
-```
+Open **How it works → Operator tools**, or go to `/#/operator`. Connect your treasury wallet in Phantom or Solflare to:
 
-### The map and the buildings
+- **Refund** payments that didn't count (for example, two people buying the same building at once).
+- **Run a price audit**, which recomputes the price of recent purchases from OpenStreetMap and lets you **revoke & refund** anything underpaid or with a faked location.
+- **Remove billboards** that break your rules.
 
-- **Map:** vector tiles from [OpenFreeMap](https://openfreemap.org) (free, no API key), with a custom near-black style and MapLibre GL's globe projection.
-- **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org). A building's ID is its OSM element (`w…` for a way, `r…` for a relation). The map merges same-height buildings into one shape, so clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test that picks the building you actually clicked.
-- **What it looks like:** a satellite close-up with the footprint traced on top ([Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9)), a real photo from Wikidata/Wikimedia Commons when the building has one, and a one-tap Google Street View link.
-- **Search:** [Photon](https://photon.komoot.io) (OpenStreetMap geocoding). You can also paste a building ID or coordinates.
+It also shows totals: revenue, volume, buildings, owners and sales.
+
+### The map
+
+- **Map:** vector tiles from [OpenFreeMap](https://openfreemap.org) (free, no API key) with a custom near-black style and MapLibre GL's globe projection. From zoom 16, buildings switch to procedurally lit facades and the ground fades to darkened [Esri World Imagery](https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9).
+- **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org), identified by its OSM element (`w…`/`r…`). Clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test.
+- **What it looks like:** a satellite close-up with the footprint traced, a real photo from Wikidata/Wikimedia Commons when there is one, and a Google Street View link.
+- **Search:** [Photon](https://photon.komoot.io). You can also paste a building ID or coordinates.
 
 ---
 
 ## Good to know
 
-- **Free-claim farming:** someone can move 0.2 SOL between wallets to claim one free building per wallet. If that becomes a problem, raise `freeClaimMinSol` before launch or remove the free claim.
-- **Shared public services:** OpenFreeMap, Overpass, Photon and Esri imagery are free services with fair-use limits. They're fine for a launch; for heavy traffic, consider paid tiers or your own instances. For commercial use of the satellite imagery, check Esri's terms, or set `map.satellite` in `config.js` to another provider.
-- **Scale:** each visitor rebuilds ownership from the chain and caches it. That's quick for thousands of purchases. At tens of thousands, add an indexer that publishes a snapshot.
-- **Legal:** buildings are virtual collectibles with no rights to the real property. The site says so in *How it works* and before the first purchase. Selling digital items for crypto has rules that vary by country, so get advice for yours.
+- **Photoreal 3D:** the close-up view is stylized (lit windows over satellite ground). Fully photoreal 3D cities need Google's Photorealistic 3D Tiles, which require a paid API key and a different renderer.
+- **Browser wallets are hot wallets:** they're convenient for small amounts. The site tells visitors to back up the key and to withdraw anything large.
+- **Shared public services:** OpenFreeMap, Overpass, Photon and Esri imagery are free with fair-use limits. That's fine for a launch; for heavy traffic, consider paid tiers. For commercial use of the imagery, check Esri's terms or set `map.satellite` to another provider.
+- **Scale:** each visitor rebuilds ownership from the chain and caches it, which is quick for thousands of actions. At tens of thousands, add an indexer that publishes snapshots.
+- **Legal:** buildings are virtual collectibles with no rights to the real property. The site says so before the first purchase. Selling digital items for crypto has rules that vary by country, so get advice for yours.
 
 ---
 
@@ -108,19 +150,19 @@ prices: [
 solworld/                 the website (deploy this folder)
   index.html              page shell
   config.js               ← your settings
-  assets/js/app.js        wires everything together; buy/claim flow
-  assets/js/registry.js   on-chain registry: memo format + ownership rules
-  assets/js/solana.js     base58, transaction building, JSON-RPC (no dependencies)
-  assets/js/wallet.js     Wallet Standard connection
-  assets/js/map.js        globe, 3D buildings, picking, highlights, camera
-  assets/js/mapstyle.js   the dark map style
-  assets/js/osm.js        building lookups (Overpass)
-  assets/js/info.js       addresses, photos, satellite close-up, SOL price
-  assets/js/ui/           panel, leaderboard, search, wallet, modals
-  vendor/                 MapLibre GL JS 6.11.2 (BSD-3)
+  assets/js/app.js        wires everything together; every user action
+  assets/js/registry.js   on-chain registry: memo format + ownership/market rules
+  assets/js/pricing.js    0.001–3 SOL building prices
+  assets/js/market.js     offers: durable-nonce atomic sales
+  assets/js/burner.js     the per-visitor Solworld wallet
+  assets/js/solana.js     base58, transactions, JSON-RPC (no dependencies)
+  assets/js/wallet.js     Phantom/Solflare (Wallet Standard): deposits, holder proof, operator
+  assets/js/map.js        globe, 3D buildings, billboards, picking, camera
+  assets/js/mapstyle.js   the dark map style (+ close-up satellite and facades)
+  assets/js/facade.js     procedural lit-window textures
+  assets/js/ui/           panel, wallet, leaderboard, search, modals
+  vendor/                 MapLibre GL JS 6.11.2, @noble/ed25519 3.2.0, uqr 0.1.3
 test/                     development only (not deployed)
-  unit/                   protocol, geometry and style tests
-  e2e/                    browser tests against a local Solana runtime
 ```
 
 ## Tests
@@ -128,10 +170,10 @@ test/                     development only (not deployed)
 ```bash
 cd test
 npm install
-npm test          # unit tests: transactions checked against @solana/web3.js and run on a real SVM (LiteSVM)
-npm run e2e       # headless Chromium: demo, live (LiteSVM chain + test wallet) and mobile scenarios
+npm test          # unit tests, including the full market protocol on a real SVM (LiteSVM)
+npm run e2e       # headless Chromium: demo, live (local Solana runtime) and mobile scenarios
 ```
 
-The end-to-end suite runs the real site against a local Solana runtime, synthetic map tiles and stand-ins for every external service. Screenshots are written to `test/artifacts/`.
+The end-to-end suite runs the real site against a local Solana runtime, synthetic map tiles and stand-ins for every external service. It covers creating a wallet, deposits, buying, billboards, offers in both directions, holder credit and withdrawals. Screenshots are written to `test/artifacts/`.
 
 Map data © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors · Tiles by [OpenFreeMap](https://openfreemap.org) · © [OpenMapTiles](https://openmaptiles.org).

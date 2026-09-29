@@ -238,6 +238,15 @@ export class WalletManager extends Emitter {
   }
 }
 
+/** Asks the connected external wallet to sign (not send). Returns signed wire bytes. */
+WalletManager.prototype.signTransaction = async function signTransaction(transactionBytes) {
+  if (!this.wallet || !this.account) throw new Error('Connect a wallet first.');
+  const feature = this.wallet.features['solana:signTransaction'];
+  if (!feature) throw new Error(`${this.wallet.name} can’t co-sign transactions. Try Phantom or Solflare.`);
+  const [out] = await feature.signTransaction({ account: this.account, chain: this.chain, transaction: transactionBytes });
+  return out.signedTransaction;
+};
+
 export function isUserRejection(err) {
   const msg = `${err?.name || ''} ${err?.message || ''}`.toLowerCase();
   return err?.code === 4001 || /reject|denied|declined|cancel|user closed|not approved/.test(msg);

@@ -162,8 +162,13 @@ export function transferInstruction({ from, to, lamports, references = [] }) {
   };
 }
 
-export function memoInstruction(text) {
-  return { programId: MEMO_PROGRAM, keys: [], data: new TextEncoder().encode(text) };
+/** Memo. Any `signers` listed must sign the transaction (the memo program checks). */
+export function memoInstruction(text, signers = []) {
+  return {
+    programId: MEMO_PROGRAM,
+    keys: signers.map((pubkey) => ({ pubkey, isSigner: true, isWritable: false })),
+    data: new TextEncoder().encode(text),
+  };
 }
 
 export function computeUnitLimitInstruction(units) {
@@ -178,6 +183,75 @@ export function computeUnitPriceInstruction(microLamports) {
   data[0] = 3;
   data.set(u64le(microLamports), 1);
   return { programId: COMPUTE_BUDGET_PROGRAM, keys: [], data };
+}
+
+/* ---------------------------------------------------------- durable nonces */
+// Used by the marketplace: a buyer pre-signs a sale against the building's
+// nonce, the owner co-signs to accept, and the nonce advancing on acceptance
+// invalidates every other outstanding offer.
+
+export const SYSVAR_RECENT_BLOCKHASHES = 'SysvarRecentB1ockHashes11111111111111111111';
+export const SYSVAR_RENT = 'SysvarRent111111111111111111111111111111111';
+export const NONCE_ACCOUNT_SIZE = 80;
+
+/** SystemProgram::CreateAccountWithSeed address: sha256(base || seed || owner). */
+export async function createWithSeedAddress(base, seed, owner = SYSTEM_PROGRAM) {
+  return base58Encode(await sha256(concatBytes([base58Decode(base), new TextEncoder().encode(seed), base58Decode(owner)])));
+}
+
+export function createNonceAccountInstructions({ from, nonce, seed, lamports, authority }) {
+  const seedBytes = new TextEncoder().encode(seed);
+  return [
+    {
+      programId: SYSTEM_PROGRAM,
+      keys: [
+        { pubkey: from, isSigner: true, isWritable: true },
+        { pubkey: nonce, isSigner: false, isWritable: true },
+      ],
+      data: concatBytes([u32le(3), base58Decode(from), u64le(seedBytes.length), seedBytes, u64le(lamports), u64le(NONCE_ACCOUNT_SIZE), base58Decode(SYSTEM_PROGRAM)]),
+    },
+    {
+      programId: SYSTEM_PROGRAM,
+      keys: [
+        { pubkey: nonce, isSigner: false, isWritable: true },
+        { pubkey: SYSVAR_RECENT_BLOCKHASHES, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT, isSigner: false, isWritable: false },
+      ],
+      data: concatBytes([u32le(6), base58Decode(authority)]),
+    },
+  ];
+}
+
+export function advanceNonceInstruction({ nonce, authority }) {
+  return {
+    programId: SYSTEM_PROGRAM,
+    keys: [
+      { pubkey: nonce, isSigner: false, isWritable: true },
+      { pubkey: SYSVAR_RECENT_BLOCKHASHES, isSigner: false, isWritable: false },
+      { pubkey: authority, isSigner: true, isWritable: false },
+    ],
+    data: u32le(4),
+  };
+}
+
+export function authorizeNonceInstruction({ nonce, authority, newAuthority }) {
+  return {
+    programId: SYSTEM_PROGRAM,
+    keys: [
+      { pubkey: nonce, isSigner: false, isWritable: true },
+      { pubkey: authority, isSigner: true, isWritable: false },
+    ],
+    data: concatBytes([u32le(7), base58Decode(newAuthority)]),
+  };
+}
+
+/** Parses a nonce account's data (base64 or bytes) → { authority, value } or null. */
+export function parseNonceAccount(data) {
+  const bytes = typeof data === 'string' ? fromBase64(data) : data;
+  if (!bytes || bytes.length < 72) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint32(4, true) !== 1) return null; // not initialized
+  return { authority: base58Encode(bytes.subarray(8, 40)), value: base58Encode(bytes.subarray(40, 72)) };
 }
 
 /* ------------------------------------------------------------ compilation */
@@ -240,6 +314,14 @@ export function compileMessage({ payer, instructions, recentBlockhash }) {
 /** Wire-format transaction with empty signature slots, ready for a wallet to sign. */
 export function serializeUnsignedTransaction(message) {
   return concatBytes([compactU16(message.numSigners), new Uint8Array(64 * message.numSigners), message.bytes]);
+}
+
+/** Writes `signature` into the slot of `signer` in a wire transaction built from `message`. */
+export function placeSignature(wire, message, signer, signature) {
+  const index = message.accountKeys.indexOf(signer);
+  if (index < 0 || index >= message.numSigners) throw new Error('Not a signer of this transaction');
+  wire.set(signature, compactU16(message.numSigners).length + 64 * index);
+  return wire;
 }
 
 /* -------------------------------------------------------------------- RPC */
@@ -340,6 +422,25 @@ export class Rpc {
   async getSignatureStatuses(signatures) {
     const res = await this.call('getSignatureStatuses', [signatures, { searchTransactionHistory: true }]);
     return res.value;
+  }
+
+  async getAccountInfo(address) {
+    const res = await this.call('getAccountInfo', [address, { encoding: 'base64', commitment: 'confirmed' }]);
+    if (!res?.value) return null;
+    return { lamports: res.value.lamports, owner: res.value.owner, data: res.value.data?.[0] || '' };
+  }
+
+  getMinimumBalanceForRentExemption(size) {
+    return this.call('getMinimumBalanceForRentExemption', [size]);
+  }
+
+  /** Token accounts of `owner` for `mint` → [{ address, amount (UI units), raw, decimals }]. */
+  async getTokenAccountsByOwner(owner, mint) {
+    const res = await this.call('getTokenAccountsByOwner', [owner, { mint }, { encoding: 'jsonParsed', commitment: 'confirmed' }]);
+    return (res?.value || []).map((a) => {
+      const t = a.account?.data?.parsed?.info?.tokenAmount || {};
+      return { address: a.pubkey, amount: Number(t.uiAmountString ?? t.uiAmount ?? 0), raw: t.amount, decimals: t.decimals };
+    });
   }
 
   sendRawTransaction(bytes) {

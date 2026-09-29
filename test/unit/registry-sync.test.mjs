@@ -41,7 +41,7 @@ async function setupChain() {
   return { chain, treasury, reference, send };
 }
 
-const rules = { prices: [{ from: 0, lamports: 50_000_000 }], freeClaimMinLamports: 200_000_000 };
+
 
 test('catches up on a long history in chunks and applies the rules', async () => {
   const { chain, treasury, send } = await setupChain();
@@ -50,17 +50,17 @@ test('catches up on a long history in chunks and applies the rules', async () =>
   let n = 0;
   for (let i = 0; i < 240; i++) {
     const b = buyers[i % buyers.length];
-    send(b, { lamports: 50_000_000, memo: buildMemo('buy', `w${1000 + i}`, [0.001 * i, 10]) });
+    send(b, { lamports: 50_000_000, memo: buildMemo('buy', { key: `w${1000 + i}`, center: [0.001 * i, 10], price: 50_000_000 }) });
     n++;
   }
   // Noise that references the registry but isn't a valid purchase.
   send(buyers[0], { lamports: 1, memo: null }); // no memo
   send(buyers[0], { lamports: 1, memo: 'hello world' }); // junk memo
-  send(buyers[1], { lamports: 49_000_000, memo: buildMemo('buy', 'w5', [1, 1]) }); // underpaid
-  send(buyers[2], { lamports: 50_000_000, memo: buildMemo('buy', 'w1000', [1, 1]) }); // already owned -> refund
-  send(buyers[3], { lamports: 0, memo: buildMemo('claim', 'w9001', [2, 2]) }); // free claim (rich wallet)
+  send(buyers[1], { lamports: 49_000_000, memo: buildMemo('buy', { key: 'w5', center: [1, 1], price: 50_000_000 }) }); // underpaid
+  send(buyers[2], { lamports: 50_000_000, memo: buildMemo('buy', { key: 'w1000', center: [1, 1], price: 50_000_000 }) }); // already owned -> refund
+  send(buyers[3], { lamports: 1_000_000, memo: buildMemo('buy', { key: 'w9001', center: [2, 2], price: 1_000_000 }) }); // cheapest building
 
-  const registry = new ChainRegistry({ rpc: rpcFor(chain), treasury: addr(treasury), cluster: 'localnet', rules, storage: memoryStorage() });
+  const registry = new ChainRegistry({ rpc: rpcFor(chain), treasury: addr(treasury), cluster: 'localnet', rules: { treasury: addr(treasury), feeBps: 500 }, storage: memoryStorage() });
   await registry.init();
   const changes = [];
   registry.on('change', (c) => changes.push(c));
@@ -68,14 +68,14 @@ test('catches up on a long history in chunks and applies the rules', async () =>
 
   const s = registry.state;
   assert.equal(s.totals.buildings, 241);
-  assert.equal(s.totals.volume, 240 * 50_000_000);
+  assert.equal(s.totals.volume, 240 * 50_000_000 + 1_000_000);
   assert.equal(s.buildings.get('w9001').owner, addr(buyers[3]));
   assert.deepEqual(s.voids.map((v) => v.reason).sort(), ['taken', 'underpaid']);
   assert.ok(changes.length >= 3, 'history arrived progressively in chunks');
   assert.ok(changes.every((c) => c.initial), 'first sync is flagged as history');
 
   // Live updates after catch-up are not "initial".
-  send(buyers[4], { lamports: 50_000_000, memo: buildMemo('buy', 'w77777', [3, 3]) });
+  send(buyers[4], { lamports: 50_000_000, memo: buildMemo('buy', { key: 'w77777', center: [3, 3], price: 50_000_000 }) });
   await registry.sync();
   assert.equal(changes.at(-1).initial, false);
   assert.equal(changes.at(-1).fresh[0].key, 'w77777');
@@ -86,11 +86,11 @@ test('resumes where it stopped when the RPC fails mid-way, and persists progress
   const buyer = nacl.sign.keyPair();
   chain.airdrop(addr(buyer), 10_000_000_000);
   const sigs = [];
-  for (let i = 0; i < 30; i++) sigs.push(send(buyer, { lamports: 50_000_000, memo: buildMemo('buy', `w${i + 1}`, [0, 0]) }));
+  for (let i = 0; i < 30; i++) sigs.push(send(buyer, { lamports: 50_000_000, memo: buildMemo('buy', { key: `w${i + 1}`, center: [0, 0], price: 50_000_000 }) }));
   const storage = memoryStorage();
   let broken = true;
   const rpc = rpcFor(chain, { failTx: (sig) => broken && sig === sigs[20] });
-  const registry = new ChainRegistry({ rpc, treasury: addr(treasury), cluster: 'localnet', rules, storage });
+  const registry = new ChainRegistry({ rpc, treasury: addr(treasury), cluster: 'localnet', rules: { treasury: addr(treasury), feeBps: 500 }, storage });
   await registry.init();
   await registry.sync();
   assert.equal(registry.state.totals.buildings, 20, 'everything before the failing transaction is kept');
@@ -100,7 +100,7 @@ test('resumes where it stopped when the RPC fails mid-way, and persists progress
   assert.equal(registry.state.totals.buildings, 30, 'the next sync picks up from the failure');
 
   // A new page load starts from the cache and only asks for new signatures.
-  const again = new ChainRegistry({ rpc: rpcFor(chain), treasury: addr(treasury), cluster: 'localnet', rules, storage });
+  const again = new ChainRegistry({ rpc: rpcFor(chain), treasury: addr(treasury), cluster: 'localnet', rules: { treasury: addr(treasury), feeBps: 500 }, storage });
   await again.init();
   assert.equal(again.state.totals.buildings, 30);
   let fetched = 0;
@@ -113,8 +113,8 @@ test('ignores payments to the treasury that do not carry the registry reference'
   const { chain, treasury, send } = await setupChain();
   const buyer = nacl.sign.keyPair();
   chain.airdrop(addr(buyer), 5_000_000_000);
-  send(buyer, { lamports: 50_000_000, memo: buildMemo('buy', 'w42', [0, 0]), refs: [] });
-  const registry = new ChainRegistry({ rpc: rpcFor(chain), treasury: addr(treasury), cluster: 'localnet', rules, storage: memoryStorage() });
+  send(buyer, { lamports: 50_000_000, memo: buildMemo('buy', { key: 'w42', center: [0, 0], price: 50_000_000 }), refs: [] });
+  const registry = new ChainRegistry({ rpc: rpcFor(chain), treasury: addr(treasury), cluster: 'localnet', rules: { treasury: addr(treasury), feeBps: 500 }, storage: memoryStorage() });
   await registry.init();
   await registry.sync();
   assert.equal(registry.state.totals.buildings, 0);

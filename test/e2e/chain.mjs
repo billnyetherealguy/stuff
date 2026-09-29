@@ -8,6 +8,7 @@ import nacl from 'tweetnacl';
 
 const SYSTEM = '11111111111111111111111111111111';
 const MEMO = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+export const TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFM2Q7Vr87VAxbFmJ3sR';
 
 function readCompact(bytes, offset) {
   let value = 0;
@@ -65,6 +66,33 @@ export class Chain {
     this.bySig = new Map();
     this.slot = 310_000_000;
     this.sent = [];
+    this.decimals = new Map();
+  }
+
+  /** Writes an SPL token account (owner holds `uiAmount` tokens of `mint`). */
+  setTokenAccount(address, { mint, owner, uiAmount, decimals = 6 }) {
+    this.decimals.set(mint, decimals);
+    (this.tokenAccounts ||= new Map()).set(address, { mint, owner });
+    const data = new Uint8Array(165);
+    data.set(bs58.decode(mint), 0);
+    data.set(bs58.decode(owner), 32);
+    new DataView(data.buffer).setBigUint64(64, BigInt(Math.round(uiAmount * 10 ** decimals)), true);
+    data[108] = 1; // initialized
+    this.svm.setAccount({ address, data, executable: false, lamports: 2_039_280n, programAddress: TOKEN_PROGRAM, space: 165n });
+  }
+
+  tokenBalances(keys) {
+    const out = [];
+    keys.forEach((k, i) => {
+      const a = this.svm.getAccount(k);
+      if (!a?.exists || a.programAddress !== TOKEN_PROGRAM || a.data.length < 72) return;
+      const mint = bs58.encode(a.data.slice(0, 32));
+      const decimals = this.decimals.get(mint) ?? 6;
+      const raw = new DataView(a.data.buffer, a.data.byteOffset).getBigUint64(64, true);
+      const ui = Number(raw) / 10 ** decimals;
+      out.push({ accountIndex: i, mint, owner: bs58.encode(a.data.slice(32, 64)), programId: TOKEN_PROGRAM, uiTokenAmount: { amount: String(raw), decimals, uiAmount: ui, uiAmountString: String(ui) } });
+    });
+    return out;
   }
 
   airdrop(address, lamports) {
@@ -97,6 +125,7 @@ export class Chain {
       source: 'transaction',
     }));
     const pre = parsed.keys.map((k) => this.balance(k));
+    const preTokens = this.tokenBalances(parsed.keys);
     const result = this.svm.sendTransaction(this.decoder.decode(wire));
     const failed = typeof result.err === 'function';
     if (failed) {
@@ -107,6 +136,11 @@ export class Chain {
       throw err;
     }
     const post = parsed.keys.map((k) => this.balance(k));
+    // Real clusters move to a new blockhash every slot; durable nonces rely on
+    // that, so advance it whenever a nonce was created or used.
+    if (parsed.instructions.some((ix) => parsed.keys[ix.programIdIndex] === SYSTEM && [4, 6].includes(ix.data[0]) && ix.data.length <= 36)) {
+      this.svm.expireBlockhash();
+    }
     this.slot += 1 + Math.floor(Math.random() * 3);
 
     const instructions = parsed.instructions.map((ix) => {
@@ -143,7 +177,7 @@ export class Chain {
           postBalances: post,
           postTokenBalances: [],
           preBalances: pre,
-          preTokenBalances: [],
+          preTokenBalances: preTokens,
           rewards: [],
           status: { Ok: null },
         },
@@ -197,6 +231,23 @@ export class Chain {
           blockTime: t.blockTime,
           confirmationStatus: 'confirmed',
         }));
+      }
+      case 'getAccountInfo': {
+        const a = this.svm.getAccount(params[0]);
+        if (!a?.exists) return { ...ctx, value: null };
+        return { ...ctx, value: { lamports: Number(a.lamports), owner: a.programAddress, executable: a.executable, data: [Buffer.from(a.data).toString('base64'), 'base64'] } };
+      }
+      case 'getMinimumBalanceForRentExemption':
+        return Number(this.svm.minimumBalanceForRentExemption(BigInt(params[0])));
+      case 'getTokenAccountsByOwner': {
+        const [owner, { mint }] = params;
+        const value = [];
+        for (const [addr, meta] of this.tokenAccounts || []) {
+          if (meta.owner !== owner || meta.mint !== mint) continue;
+          const tb = this.tokenBalances([addr])[0];
+          value.push({ pubkey: addr, account: { data: { parsed: { info: { mint, owner, tokenAmount: tb.uiTokenAmount } } } } });
+        }
+        return { ...ctx, value };
       }
       case 'getTransaction':
         return this.bySig.get(params[0])?.tx ?? null;

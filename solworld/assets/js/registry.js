@@ -1,15 +1,22 @@
 // The Solworld registry.
 //
 // There is no server and no database: the Solana ledger is the source of truth.
-// Every purchase or free claim is one transaction that
-//   1. transfers SOL (0 for a free claim) from the buyer to the treasury,
-//   2. carries the registry "reference" key on that transfer, so every Solworld
-//      transaction can be listed with getSignaturesForAddress(registry), and
-//   3. carries a memo:  solworld:<buy|claim>:<buildingKey>@<lat>,<lng>
+// Every Solworld action is one transaction that sends SOL (possibly 0) to the
+// treasury with the registry "reference" key attached (so all of them can be
+// listed with getSignaturesForAddress(registry)) and carries a memo:
 //
-// Any browser can replay those transactions in order and apply the same rules,
-// so everyone derives the same ownership map. Building keys are OpenStreetMap
-// element ids: "w123" for a way, "r456" for a relation.
+//   solworld:buy:<key>@<lat>,<lng>;p=<lamports>       buy an unowned building
+//   solworld:hold:<key>@<lat>,<lng>;p=<lamports>      take one using meme-coin credit
+//   solworld:link:<holder>                            link a holder wallet (both sign)
+//   solworld:offer:<key>;p=..;n=<nonce>;v=<value>;s=<buyer signature of the sale>
+//   solworld:cancel:<offer signature>
+//   solworld:sale:<key>;p=<lamports>                  atomic sale, signed by buyer and owner
+//   solworld:sign:<key>;c=<color>;t=<text>            owner's billboard
+//   solworld:revoke:<signature>                       treasury voids an action
+//   solworld:refund:<signature>                       treasury refunded a payment
+//
+// Every browser replays these in order with the same rules, so everyone sees
+// the same owners. Building keys are OpenStreetMap ids: "w123" / "r456".
 
 import { Emitter } from './emitter.js';
 import {
@@ -22,27 +29,90 @@ import {
   sha256,
 } from './solana.js';
 
-const KEY_RE = /^[wr][1-9]\d{0,15}$/;
-const MEMO_RE = /^solworld:(buy|claim):([wr][1-9]\d{0,15})@(-?\d{1,2}(?:\.\d{1,8})?),(-?\d{1,3}(?:\.\d{1,8})?)$/;
-const CACHE_VERSION = 2;
+const KEY = '[wr][1-9]\\d{0,15}';
+const ADDR = '[1-9A-HJ-NP-Za-km-z]{32,44}';
+const SIG = '[1-9A-HJ-NP-Za-km-z]{64,90}';
+const COORD = '(-?\\d{1,2}(?:\\.\\d{1,8})?),(-?\\d{1,3}(?:\\.\\d{1,8})?)';
+const CACHE_VERSION = 3;
 
-export const isBuildingKey = (key) => typeof key === 'string' && KEY_RE.test(key);
+const MEMOS = {
+  buy: new RegExp(`^(${KEY})@${COORD};p=(\\d{1,13})$`),
+  hold: new RegExp(`^(${KEY})@${COORD};p=(\\d{1,13})$`),
+  link: new RegExp(`^(${ADDR})$`),
+  offer: new RegExp(`^(${KEY});p=(\\d{1,13});n=(${ADDR});v=(${ADDR});s=(${SIG})$`),
+  cancel: new RegExp(`^(${SIG})$`),
+  sale: new RegExp(`^(${KEY});p=(\\d{1,13})$`),
+  sign: new RegExp(`^(${KEY});c=([0-7]);t=([A-Za-z0-9%._~!*'()-]{0,240})$`),
+  revoke: new RegExp(`^(${SIG})$`),
+  refund: new RegExp(`^(${SIG})$`),
+};
 
-export function buildMemo(kind, key, [lng, lat]) {
-  if (kind !== 'buy' && kind !== 'claim') throw new Error(`Unknown action: ${kind}`);
-  if (!isBuildingKey(key)) throw new Error(`Invalid building key: ${key}`);
-  if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180)) throw new Error('Invalid coordinates');
-  return `solworld:${kind}:${key}@${lat.toFixed(6)},${lng.toFixed(6)}`;
+export const MIN_PRICE = 1_000_000; // protocol floor: 0.001 SOL
+export const SIGN_COLORS = ['#2af5a8', '#8f6bff', '#5ad1ff', '#ffd166', '#ff6b9a', '#ff8a3d', '#ffffff', '#b8ff5a'];
+export const isBuildingKey = (key) => typeof key === 'string' && new RegExp(`^${KEY}$`).test(key);
+
+const fixed = (n) => Number(n).toFixed(6);
+
+export function buildMemo(action, fields) {
+  switch (action) {
+    case 'buy':
+    case 'hold': {
+      const { key, center, price } = fields;
+      if (!isBuildingKey(key)) throw new Error(`Invalid building key: ${key}`);
+      const [lng, lat] = center;
+      if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180)) throw new Error('Invalid coordinates');
+      return `solworld:${action}:${key}@${fixed(lat)},${fixed(lng)};p=${Math.round(price)}`;
+    }
+    case 'link':
+      return `solworld:link:${fields.holder}`;
+    case 'offer':
+      return `solworld:offer:${fields.key};p=${Math.round(fields.price)};n=${fields.nonce};v=${fields.nonceValue};s=${fields.buyerSig}`;
+    case 'sale':
+      return `solworld:sale:${fields.key};p=${Math.round(fields.price)}`;
+    case 'sign':
+      return `solworld:sign:${fields.key};c=${fields.color};t=${encodeURIComponent(fields.text).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+    case 'cancel':
+    case 'revoke':
+    case 'refund':
+      return `solworld:${action}:${fields.ref}`;
+    default:
+      throw new Error(`Unknown action: ${action}`);
+  }
 }
 
 export function parseMemo(text) {
   if (typeof text !== 'string') return null;
-  const m = MEMO_RE.exec(text.trim());
-  if (!m) return null;
-  const lat = Number(m[3]);
-  const lng = Number(m[4]);
-  if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return null;
-  return { kind: m[1], key: m[2], lat, lng };
+  const m = /^solworld:([a-z]+):(.*)$/.exec(text.trim());
+  if (!m || !MEMOS[m[1]]) return null;
+  const action = m[1];
+  const g = MEMOS[action].exec(m[2]);
+  if (!g) return null;
+  switch (action) {
+    case 'buy':
+    case 'hold': {
+      const lat = Number(g[2]);
+      const lng = Number(g[3]);
+      if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return null;
+      return { action, key: g[1], lat, lng, price: Number(g[4]) };
+    }
+    case 'link':
+      return { action, holder: g[1] };
+    case 'offer':
+      return { action, key: g[1], price: Number(g[2]), nonce: g[3], nonceValue: g[4], buyerSig: g[5] };
+    case 'sale':
+      return { action, key: g[1], price: Number(g[2]) };
+    case 'sign': {
+      let text = '';
+      try {
+        text = decodeURIComponent(g[3]);
+      } catch {
+        return null;
+      }
+      return { action, key: g[1], color: Number(g[2]), text: text.slice(0, 60) };
+    }
+    default:
+      return { action, ref: g[1] };
+  }
 }
 
 /** Deterministic, per-treasury registry reference key (not a wallet; nobody holds its key). */
@@ -50,24 +120,29 @@ export async function deriveRegistryAddress(treasury) {
   return base58Encode(await sha256(`solworld/registry/v1/${treasury}`));
 }
 
-/** Price in lamports that applied at unix time `time` (null = now / latest). */
-export function priceAt(prices, time) {
-  let price = prices[0].lamports;
-  for (const entry of prices) {
-    if (time == null || entry.from <= time) price = entry.lamports;
+/** Marketplace fee (lamports) on a sale at `price`. */
+export const saleFee = (price, feeBps) => Math.ceil((price * feeBps) / 10_000);
+
+/** Lamports of credit per whole token at unix time `time` (config schedule). */
+export function tokenPriceAt(schedule, time) {
+  let price = 0;
+  for (const e of schedule || []) {
+    if (time == null || e.from <= time) price = e.lamportsPerToken;
     else break;
   }
   return price;
 }
 
 /**
- * Extracts a registry event from a jsonParsed transaction, or null when the
- * transaction is not a well-formed Solworld action.
+ * Turns a jsonParsed transaction into a registry event, or null when it is
+ * not a well-formed Solworld action. Rules are applied later in computeState.
  */
-export function parseRegistryTransaction(tx, signature, { treasury }) {
+export function parseRegistryTransaction(tx, signature) {
   if (!tx?.transaction?.message || !tx.meta || tx.meta.err) return null;
   const message = tx.transaction.message;
   const keys = (message.accountKeys || []).map((k) => (typeof k === 'string' ? { pubkey: k } : k));
+  const numSigners = message.header?.numRequiredSignatures ?? 1;
+  const signers = keys.filter((k, i) => k.signer ?? i < numSigners).map((k) => k.pubkey);
 
   let memo = null;
   const transfers = [];
@@ -84,119 +159,250 @@ export function parseRegistryTransaction(tx, signature, { treasury }) {
       }
       memo ||= parseMemo(text);
     } else if ((programId === SYSTEM_PROGRAM || ix.program === 'system') && ix.parsed?.type === 'transfer') {
-      transfers.push(ix.parsed.info);
+      const { source, destination, lamports } = ix.parsed.info || {};
+      transfers.push({ s: source, d: destination, l: Number(lamports || 0) });
     }
   }
   if (!memo) return null;
 
-  const toTreasury = transfers.filter((t) => t?.destination === treasury);
-  if (!toTreasury.length) return null;
-  const buyer = toTreasury[0].source;
-  const paid = toTreasury.filter((t) => t.source === buyer).reduce((sum, t) => sum + Number(t.lamports || 0), 0);
+  const pre = {};
+  keys.forEach((k, i) => {
+    if (tx.meta.preBalances?.[i] != null) pre[k.pubkey] = Number(tx.meta.preBalances[i]);
+  });
+  const tokens = (tx.meta.preTokenBalances || []).map((b) => ({
+    owner: b.owner,
+    mint: b.mint,
+    amount: Number(b.uiTokenAmount?.uiAmountString ?? b.uiTokenAmount?.uiAmount ?? 0),
+  }));
 
-  const index = keys.findIndex((k) => k.pubkey === buyer);
-  if (index < 0) return null;
-  const numSigners = message.header?.numRequiredSignatures ?? 1;
-  const isSigner = keys[index].signer ?? index < numSigners;
-  if (!isSigner) return null;
+  return { sig: signature, slot: tx.slot ?? null, time: tx.blockTime ?? null, ...memo, signers, transfers, pre, tokens };
+}
 
-  return {
-    sig: signature,
-    slot: tx.slot ?? null,
-    time: tx.blockTime ?? null,
-    kind: memo.kind,
-    key: memo.key,
-    lat: memo.lat,
-    lng: memo.lng,
-    buyer,
-    paid,
-    pre: Number(tx.meta.preBalances?.[index] ?? 0),
-  };
+const sumTransfers = (ev, from, to) => ev.transfers.filter((t) => t.s === from && t.d === to).reduce((a, t) => a + t.l, 0);
+
+/** The wallet acting in `ev`: the signer paying the treasury (for sales, the buyer). */
+function actorOf(ev, treasury) {
+  const t = ev.transfers.find((x) => x.d === treasury && ev.signers.includes(x.s));
+  return t?.s || null;
 }
 
 /**
- * Replays events (oldest first) and applies the ownership rules:
- *  - a building has exactly one owner: the first valid action wins;
- *  - "buy" must pay at least the price in force at that block time;
- *  - "claim" is free, once per wallet, for wallets holding MORE than the
- *    free-claim threshold (checked against the pre-transaction balance).
- * Anything else is recorded as void (paid voids can be refunded by the operator).
+ * Replays events (oldest first) and applies the rules:
+ *  - one owner per building; the first valid action wins;
+ *  - buy: pays the treasury at least the price in its memo (never below 0.001 SOL);
+ *  - hold: meme-coin credit — the linked holder's token balance (recorded in the
+ *    transaction itself) times the configured SOL price must cover everything
+ *    that holder has taken so far;
+ *  - sale: signed by the current owner, paying them the price minus the market
+ *    fee and the treasury the fee;
+ *  - revoke (by the treasury) voids any action; refunds are tracked.
  */
-export function computeState(events, { prices, freeClaimMinLamports }) {
+export function computeState(events, rules) {
+  const { treasury, feeBps = 0, memecoin } = rules;
   const buildings = new Map();
   const owners = new Map();
-  const claimed = new Set();
+  const offers = new Map();
+  const links = new Map();
+  const holderSpent = new Map();
   const bySig = new Map();
   const voids = [];
   const activity = [];
-  let volume = 0;
-  let buys = 0;
-  let claims = 0;
+  const revoked = new Set();
+  const refunded = new Map();
+  const totals = { buildings: 0, owners: 0, volume: 0, revenue: 0, buys: 0, holds: 0, sales: 0 };
 
   for (const ev of events) {
-    let reason = null;
-    if (buildings.has(ev.key)) reason = 'taken';
-    else if (ev.kind === 'buy' && ev.paid < priceAt(prices, ev.time)) reason = 'underpaid';
-    else if (ev.kind === 'claim' && claimed.has(ev.buyer)) reason = 'claim-used';
-    else if (ev.kind === 'claim' && !(ev.pre > freeClaimMinLamports)) reason = 'balance';
+    if ((ev.action === 'revoke' || ev.action === 'refund') && ev.signers.includes(treasury) && ev.transfers.some((t) => t.s === treasury)) {
+      if (ev.action === 'revoke') revoked.add(ev.ref);
+      else refunded.set(ev.ref, (refunded.get(ev.ref) || 0) + ev.transfers.filter((t) => t.s === treasury).reduce((a, t) => a + t.l, 0));
+    }
+  }
 
-    if (reason) {
-      const record = { ...ev, reason };
-      voids.push(record);
-      bySig.set(ev.sig, { void: record });
+  const ownerRec = (address) => {
+    let o = owners.get(address);
+    if (!o) {
+      o = { address, count: 0, spent: 0, value: 0, keys: new Set(), first: null, last: null };
+      owners.set(address, o);
+    }
+    return o;
+  };
+  const take = (address, b, price, time) => {
+    const o = ownerRec(address);
+    o.count++;
+    o.value += price;
+    o.keys.add(b.key);
+    o.first ??= time;
+    o.last = time;
+  };
+  const release = (address, b) => {
+    const o = owners.get(address);
+    if (!o) return;
+    o.count--;
+    o.value -= b.price;
+    o.keys.delete(b.key);
+  };
+  const voidEvent = (ev, reason, paid = 0) => {
+    const record = { ...ev, reason, paid, buyer: ev.actor, refunded: refunded.get(ev.sig) || 0 };
+    voids.push(record);
+    bySig.set(ev.sig, { void: record });
+  };
+
+  for (const raw of events) {
+    const ev = { ...raw, actor: actorOf(raw, treasury) };
+    if (ev.action === 'revoke' || ev.action === 'refund') continue;
+    if (!ev.actor) continue; // not paying the treasury: not a Solworld action
+    const isRevoked = revoked.has(ev.sig);
+
+    if (ev.action === 'buy' || ev.action === 'hold') {
+      const paid = ev.action === 'buy' ? sumTransfers(ev, ev.actor, treasury) : 0;
+      if (isRevoked) {
+        voidEvent(ev, 'revoked', paid);
+        continue;
+      }
+      if (buildings.has(ev.key)) {
+        voidEvent(ev, 'taken', paid);
+        continue;
+      }
+      if (!(ev.price >= MIN_PRICE)) {
+        voidEvent(ev, 'underpaid', paid);
+        continue;
+      }
+      if (ev.action === 'buy' && paid < ev.price) {
+        voidEvent(ev, 'underpaid', paid);
+        continue;
+      }
+      let holder = null;
+      if (ev.action === 'hold') {
+        holder = links.get(ev.actor);
+        if (!memecoin?.mint || !holder) {
+          voidEvent(ev, 'unlinked');
+          continue;
+        }
+        const tokens = ev.tokens.filter((t) => t.owner === holder && t.mint === memecoin.mint).reduce((a, t) => a + t.amount, 0);
+        const credit = tokens * tokenPriceAt(memecoin.prices, ev.time);
+        const spent = holderSpent.get(holder) || 0;
+        if (spent + ev.price > credit) {
+          voidEvent(ev, 'no-credit');
+          continue;
+        }
+        holderSpent.set(holder, spent + ev.price);
+      }
+      const b = { key: ev.key, owner: ev.actor, acquired: ev.action, price: ev.price, sig: ev.sig, time: ev.time, lat: ev.lat, lng: ev.lng, holder, nonce: null, sign: null, sales: 0 };
+      buildings.set(ev.key, b);
+      take(ev.actor, b, ev.price, ev.time);
+      if (ev.action === 'buy') {
+        totals.buys++;
+        totals.volume += paid;
+        totals.revenue += paid;
+      } else totals.holds++;
+      ownerRec(ev.actor).spent += paid;
+      const rec = { kind: ev.action, key: ev.key, owner: ev.actor, price: ev.price, paid, sig: ev.sig, time: ev.time, lat: ev.lat, lng: ev.lng, seed: !!ev.seed };
+      activity.push(rec);
+      bySig.set(ev.sig, { record: rec });
       continue;
     }
 
-    const record = {
-      key: ev.key,
-      owner: ev.buyer,
-      kind: ev.kind,
-      sig: ev.sig,
-      time: ev.time,
-      lat: ev.lat,
-      lng: ev.lng,
-      paid: ev.kind === 'buy' ? ev.paid : 0,
-      seed: !!ev.seed,
-    };
-    buildings.set(ev.key, record);
-    bySig.set(ev.sig, { record });
-    if (ev.kind === 'claim') {
-      claimed.add(ev.buyer);
-      claims++;
-    } else {
-      buys++;
-      volume += ev.paid;
+    if (ev.action === 'link') {
+      if (!isRevoked && ev.holder !== ev.actor && ev.signers.includes(ev.holder)) links.set(ev.actor, ev.holder);
+      bySig.set(ev.sig, { record: { kind: 'link', holder: ev.holder, owner: ev.actor } });
+      continue;
     }
-    let owner = owners.get(ev.buyer);
-    if (!owner) {
-      owner = { address: ev.buyer, count: 0, spent: 0, keys: [], first: ev.time, last: ev.time };
-      owners.set(ev.buyer, owner);
+
+    if (ev.action === 'offer') {
+      const b = buildings.get(ev.key);
+      if (isRevoked || !b || b.owner === ev.actor || !(ev.price >= MIN_PRICE)) continue;
+      b.nonce ??= ev.nonce;
+      const offer = { sig: ev.sig, key: ev.key, buyer: ev.actor, price: ev.price, nonce: ev.nonce, nonceValue: ev.nonceValue, buyerSig: ev.buyerSig, time: ev.time, status: 'open', round: b.sales };
+      offers.set(ev.sig, offer);
+      bySig.set(ev.sig, { record: { kind: 'offer', ...offer } });
+      continue;
     }
-    owner.count++;
-    owner.spent += record.paid;
-    owner.keys.push(ev.key);
-    owner.last = ev.time;
-    activity.push(record);
+
+    if (ev.action === 'cancel') {
+      const offer = offers.get(ev.ref);
+      if (offer && offer.buyer === ev.actor && offer.status === 'open') offer.status = 'cancelled';
+      bySig.set(ev.sig, { record: { kind: 'cancel', ref: ev.ref } });
+      continue;
+    }
+
+    if (ev.action === 'sale') {
+      const b = buildings.get(ev.key);
+      const buyer = ev.actor;
+      const fee = saleFee(ev.price, feeBps);
+      const seller = b?.owner;
+      const toSeller = seller ? sumTransfers(ev, buyer, seller) : 0;
+      const toTreasury = sumTransfers(ev, buyer, treasury);
+      if (isRevoked) {
+        voidEvent(ev, 'revoked', toTreasury);
+        continue;
+      }
+      if (!b || !ev.signers.includes(seller)) {
+        voidEvent(ev, 'not-owner', toTreasury);
+        continue;
+      }
+      if (buyer === seller || !(ev.price >= MIN_PRICE) || toSeller < ev.price - fee || toTreasury < fee) {
+        voidEvent(ev, 'bad-sale', toTreasury);
+        continue;
+      }
+      release(seller, b);
+      b.owner = buyer;
+      b.acquired = 'sale';
+      b.price = ev.price;
+      b.sig = ev.sig;
+      b.time = ev.time;
+      b.sign = null;
+      b.sales++;
+      take(buyer, b, ev.price, ev.time);
+      ownerRec(buyer).spent += ev.price;
+      for (const o of offers.values()) {
+        if (o.key !== ev.key || o.status !== 'open') continue;
+        o.status = o.buyer === buyer && o.price === ev.price ? 'accepted' : 'stale';
+      }
+      totals.sales++;
+      totals.volume += ev.price;
+      totals.revenue += toTreasury;
+      const rec = { kind: 'sale', key: ev.key, owner: buyer, seller, price: ev.price, paid: ev.price, sig: ev.sig, time: ev.time, lat: b.lat, lng: b.lng };
+      activity.push(rec);
+      bySig.set(ev.sig, { record: rec });
+      continue;
+    }
+
+    if (ev.action === 'sign') {
+      const b = buildings.get(ev.key);
+      if (!isRevoked && b && b.owner === ev.actor) b.sign = { color: ev.color, text: ev.text, time: ev.time, sig: ev.sig };
+      bySig.set(ev.sig, { record: { kind: 'sign', key: ev.key } });
+    }
   }
 
-  activity.reverse();
-  const leaderboard = [...owners.values()].sort(
-    (a, b) => b.count - a.count || b.spent - a.spent || (a.first ?? 0) - (b.first ?? 0),
-  );
-  leaderboard.forEach((o, i) => {
+  for (const o of owners.values()) o.keys = [...o.keys];
+  const ranked = [...owners.values()].filter((o) => o.count > 0);
+  ranked.sort((a, b) => b.count - a.count || b.value - a.value || (a.first ?? 0) - (b.first ?? 0));
+  ranked.forEach((o, i) => {
     o.rank = i + 1;
   });
+  for (const o of owners.values()) if (!o.count) o.rank = null;
+  totals.buildings = buildings.size;
+  totals.owners = ranked.length;
+  activity.reverse();
 
   return {
     buildings,
     owners,
-    leaderboard,
-    claimed,
+    leaderboard: ranked,
+    offers,
+    links,
+    holderSpent,
     voids,
+    refunded,
     activity,
     bySig,
-    totals: { buildings: buildings.size, owners: owners.size, volume, buys, claims },
+    totals,
   };
+}
+
+/** Open offers on a building, best first. */
+export function openOffers(state, key) {
+  return [...state.offers.values()].filter((o) => o.key === key && o.status === 'open').sort((a, b) => b.price - a.price || a.time - b.time);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -326,7 +532,7 @@ export class ChainRegistry extends BaseRegistry {
               stalled = true; // not retrievable yet: resume from here next time
               break;
             }
-            const ev = parseRegistryTransaction(tx, s.signature, { treasury: this.treasury });
+            const ev = parseRegistryTransaction(tx, s.signature);
             if (ev) {
               ev.slot ??= s.slot;
               ev.time ??= s.blockTime ?? Math.floor(Date.now() / 1000);
@@ -375,19 +581,21 @@ export class ChainRegistry extends BaseRegistry {
   }
 }
 
+export const DEMO_TREASURY = 'DemoTreasury1111111111111111111111111111111';
+
 /**
- * Demo mode (no treasury configured): identical rules, but actions are
+ * Demo mode (no treasury configured): the same rules, but actions are
  * simulated and stored in this browser only. Nothing touches the chain.
  */
 export class DemoRegistry extends BaseRegistry {
   constructor({ rules, storage, seeds }) {
-    super({ rules, storage });
+    super({ rules: { ...rules, treasury: DEMO_TREASURY }, storage });
     this.seeds = seeds;
     this.slot = 1;
     this.address = 'demo';
   }
 
-  static STORAGE_KEY = 'solworld:demo:v2';
+  static STORAGE_KEY = 'solworld:demo:v3';
 
   async init() {
     const saved = this.storage?.get(DemoRegistry.STORAGE_KEY);
@@ -406,10 +614,7 @@ export class DemoRegistry extends BaseRegistry {
     try {
       const seeds = await this.seeds();
       if (!seeds?.length) return;
-      const taken = new Set(this.events.map((e) => e.key));
-      const fresh = seeds.filter((s) => !taken.has(s.key)).map((s) => ({ ...s, seed: true, slot: 0 }));
-      // Seeds are "history": put them before anything the visitor did.
-      this.events = [...fresh, ...this.events];
+      this.events = [...seeds.map((s) => ({ ...s, seed: true, slot: 0 })), ...this.events];
       this.seeded = true;
       this.recompute();
       this.persist();
@@ -423,21 +628,22 @@ export class DemoRegistry extends BaseRegistry {
     this.storage?.set(DemoRegistry.STORAGE_KEY, { events: this.events, slot: this.slot, seeded: !!this.seeded });
   }
 
-  async submit({ kind, key, lng, lat, buyer, paid, pre }) {
-    await sleep(900 + Math.random() * 700); // feel like a network round trip
+  /**
+   * Records a simulated action. `transfers` / `signers` mirror what the real
+   * transaction would contain, so the same rules apply.
+   */
+  async submit(fields) {
+    await sleep(700 + Math.random() * 600); // feel like a network round trip
     const sigBytes = new Uint8Array(64);
     globalThis.crypto.getRandomValues(sigBytes);
     const ev = {
-      sig: `demo-${base58Encode(sigBytes).slice(0, 40)}`,
+      sig: base58Encode(sigBytes),
+      demo: true,
       slot: ++this.slot,
       time: Math.floor(Date.now() / 1000),
-      kind,
-      key,
-      lat,
-      lng,
-      buyer,
-      paid,
-      pre,
+      tokens: [],
+      pre: {},
+      ...fields,
     };
     this.events.push(ev);
     this.recompute();

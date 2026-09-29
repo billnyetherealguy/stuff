@@ -3294,3 +3294,422 @@ a {
     scroll-behavior: auto !important;
   }
 }
+
+/* ==========================================================================
+   v2 — Solworld wallet, deposits, market, billboards
+   ========================================================================== */
+
+button.claim-card {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+button.claim-card:hover {
+  border-color: var(--line-2);
+  background: rgba(255, 255, 255, 0.05);
+}
+.claim-card.is-warning {
+  background: rgba(255, 181, 71, 0.09);
+  border-color: rgba(255, 181, 71, 0.28);
+  color: var(--warn);
+}
+.claim-card > span:first-child {
+  flex: none;
+  margin-top: 1px;
+}
+
+.wallet-menu-bal {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.wallet-menu-bal small {
+  font-size: 13px;
+  color: var(--ink-3);
+  font-weight: 500;
+}
+.wallet-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.wallet-actions .btn {
+  justify-content: center;
+}
+
+.toast-action {
+  margin-top: 8px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ---- forms ---- */
+.form {
+  display: grid;
+  gap: 12px;
+}
+.form label {
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.field-input {
+  width: 100%;
+  min-width: 0;
+  height: 42px;
+  padding: 0 13px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: rgba(255, 255, 255, 0.04);
+  outline: none;
+  font-size: 14px;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+}
+textarea.field-input {
+  height: auto;
+  padding: 10px 13px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.field-input:focus {
+  border-color: rgba(143, 107, 255, 0.6);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 0 0 3px var(--violet-soft);
+}
+.field-input::placeholder {
+  color: var(--ink-4);
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-row .field-input {
+  flex: 1;
+}
+.field-unit {
+  color: var(--ink-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.field-error {
+  margin: 0;
+  min-height: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+.field-error:empty {
+  display: none;
+}
+.check {
+  display: flex !important;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 9px !important;
+  color: var(--ink) !important;
+  font-size: 13.5px !important;
+  cursor: pointer;
+}
+.check input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--mint);
+}
+.secret {
+  display: block;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 181, 71, 0.28);
+  background: rgba(255, 181, 71, 0.06);
+  font: 500 12px/1.5 var(--mono);
+  word-break: break-all;
+  user-select: all;
+  transition: filter 0.25s;
+}
+.secret.is-hidden {
+  filter: blur(6px);
+  user-select: none;
+}
+
+/* ---- deposit ---- */
+.deposit {
+  display: grid;
+  gap: 14px;
+}
+.deposit-need {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 181, 71, 0.09);
+  border: 1px solid rgba(255, 181, 71, 0.25);
+  color: var(--warn);
+  font-size: 13px;
+}
+.deposit-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.qr {
+  flex: none;
+  width: 148px;
+  height: 148px;
+  padding: 6px;
+  border-radius: 14px;
+  background: #fff;
+}
+.qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.deposit-side {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.deposit-side small {
+  color: var(--ink-3);
+}
+.deposit-addr {
+  font: 500 12.5px/1.45 var(--mono);
+  word-break: break-all;
+  color: var(--ink);
+}
+.deposit-ext {
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.deposit-bal {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.deposit-bal b {
+  color: var(--ink);
+  font-size: 18px;
+}
+.deposit-live {
+  margin-left: auto;
+  width: 13px;
+  height: 13px;
+}
+.holder-preview:empty {
+  display: none;
+}
+.holder-preview {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--mint-soft);
+  border: 1px solid rgba(42, 245, 168, 0.22);
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.holder-preview b {
+  color: var(--mint);
+}
+
+/* ---- price ---- */
+.price-row {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.price-row small {
+  display: block;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.price-big {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.price-usd {
+  margin-left: 8px;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+.price-factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip--xs {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11.5px;
+}
+.btn-sub {
+  margin-left: auto;
+  opacity: 0.75;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ---- market ---- */
+.market:empty {
+  display: none;
+}
+.market {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.billboard {
+  --sign: #2af5a8;
+  position: relative;
+  padding: 14px 16px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--sign) 45%, transparent);
+  background: radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--sign) 22%, transparent), transparent 70%), rgba(255, 255, 255, 0.02);
+  box-shadow: 0 0 28px -10px var(--sign), inset 0 0 18px -12px var(--sign);
+  animation: billboard-in 0.6s var(--ease) both;
+}
+.billboard-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--sign);
+  font-weight: 600;
+}
+.billboard p {
+  margin: 4px 0 0;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.25;
+  color: #fff;
+  text-shadow: 0 0 14px color-mix(in srgb, var(--sign) 70%, transparent);
+  overflow-wrap: anywhere;
+}
+@keyframes billboard-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+.offers {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.025);
+}
+.offers-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+.offers-head small {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  text-align: right;
+}
+.offer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: 10px;
+  animation: billboard-in 0.4s var(--ease) both;
+}
+.offer:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+.offer small {
+  display: block;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.offer-form {
+  display: grid;
+  gap: 10px;
+}
+.sign-editor {
+  margin-top: 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0 12px;
+}
+.sign-editor[open] {
+  padding-bottom: 12px;
+}
+.sign-editor summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  cursor: pointer;
+  list-style: none;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.sign-editor summary::-webkit-details-marker {
+  display: none;
+}
+.sign-editor[open] summary {
+  color: var(--ink);
+}
+.sign-editor > * + * {
+  margin-top: 10px;
+}
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18) inset;
+  cursor: pointer;
+  transition: transform 0.2s var(--ease), border-color 0.2s;
+}
+.swatch:hover {
+  transform: scale(1.1);
+}
+.swatch.is-active {
+  border-color: #fff;
+  transform: scale(1.12);
+}
+
+@media (max-width: 520px) {
+  .deposit-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .qr {
+    align-self: center;
+  }
+}

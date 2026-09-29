@@ -1,7 +1,7 @@
 // Normalizes config.js into the settings the app runs on, and decides between
 // live mode (real SOL, treasury configured) and demo mode (simulated).
 
-import { base58Length, isAddress, solToLamports } from './solana.js';
+import { base58Length, isAddress } from './solana.js';
 
 const DEFAULT_RPC = {
   'mainnet-beta': ['https://api.mainnet-beta.solana.com', 'https://solana-rpc.publicnode.com'],
@@ -13,8 +13,8 @@ const DEFAULT_RPC = {
 const DEFAULTS = {
   treasury: '',
   cluster: 'mainnet-beta',
-  prices: [{ from: '2026-01-01T00:00:00Z', sol: 0.05 }],
-  freeClaimMinSol: 0.2,
+  marketFeePercent: 5,
+  memecoin: { mint: '', symbol: '', solPerToken: [] },
   rpc: DEFAULT_RPC,
   priorityFeeMicroLamports: 50_000,
   pollSeconds: 20,
@@ -80,17 +80,19 @@ export function loadSettings(raw = {}) {
   const cluster = DEFAULT_RPC[cfg.cluster] ? cfg.cluster : 'mainnet-beta';
   const rpcList = Array.isArray(cfg.rpc) ? cfg.rpc : cfg.rpc?.[cluster] || DEFAULT_RPC[cluster];
 
-  const prices = (Array.isArray(cfg.prices) && cfg.prices.length ? cfg.prices : DEFAULTS.prices)
-    .map((p) => ({
-      from: Math.floor(new Date(p.from || 0).getTime() / 1000) || 0,
-      lamports: solToLamports(p.sol),
-      sol: Number(p.sol),
-    }))
-    .filter((p) => p.lamports > 0)
-    .sort((a, b) => a.from - b.from);
-  if (!prices.length) prices.push({ from: 0, lamports: solToLamports(0.05), sol: 0.05 });
-
-  const freeClaimMinLamports = solToLamports(cfg.freeClaimMinSol);
+  const feeBps = Math.round(Math.min(50, Math.max(0, Number(cfg.marketFeePercent) || 0)) * 100);
+  const coin = cfg.memecoin || {};
+  const mint = isAddress(String(coin.mint || '').trim()) ? String(coin.mint).trim() : '';
+  const memecoin = mint
+    ? {
+        mint,
+        symbol: String(coin.symbol || 'TOKEN').replace(/^\$/, '').slice(0, 12),
+        prices: (Array.isArray(coin.solPerToken) ? coin.solPerToken : [])
+          .map((p) => ({ from: Math.floor(new Date(p.from || 0).getTime() / 1000) || 0, lamportsPerToken: Number(p.sol) * 1e9 }))
+          .filter((p) => p.lamportsPerToken > 0)
+          .sort((a, b) => a.from - b.from),
+      }
+    : null;
 
   return {
     mode,
@@ -98,10 +100,9 @@ export function loadSettings(raw = {}) {
     treasury: mode === 'live' ? treasury : null,
     cluster,
     rpc: rpcList,
-    prices,
-    freeClaimMinSol: Number(cfg.freeClaimMinSol),
-    freeClaimMinLamports,
-    rules: { prices, freeClaimMinLamports },
+    feeBps,
+    memecoin,
+    rules: { treasury: mode === 'live' ? treasury : null, feeBps, memecoin },
     priorityFeeMicroLamports: Math.max(0, Number(cfg.priorityFeeMicroLamports) || 0),
     pollMs: Math.max(5, Number(cfg.pollSeconds) || 20) * 1000,
     map: cfg.map,

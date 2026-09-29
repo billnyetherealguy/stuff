@@ -1,46 +1,43 @@
-// Solworld — application entry point. Wires the chain registry, wallet, map
-// and UI together and runs the buy / claim flow.
+// Solworld — application entry point. Wires the chain registry, the Solworld
+// wallet, the map and the UI together and runs every action: buying, meme-coin
+// credit, offers, sales, billboards and the operator's tools.
 
 import { loadSettings } from './settings.js';
 import {
   Rpc,
+  base58Decode,
   base58Encode,
   compileMessage,
-  computeUnitLimitInstruction,
-  computeUnitPriceInstruction,
   memoInstruction,
+  parseNonceAccount,
+  placeSignature,
   serializeUnsignedTransaction,
   sha256,
   transferInstruction,
 } from './solana.js';
-import { ChainRegistry, DemoRegistry, buildMemo, isBuildingKey, priceAt } from './registry.js';
+import { ChainRegistry, DEMO_TREASURY, DemoRegistry, buildMemo, isBuildingKey, openOffers, parseMemo, saleFee, tokenPriceAt } from './registry.js';
 import { WalletManager, isUserRejection } from './wallet.js';
+import { BurnerWallet, verifySignature } from './burner.js';
+import { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } from './market.js';
+import { priceBuilding } from './pricing.js';
 import { OsmClient, buildingHeights } from './osm.js';
 import { Geocoder, PhotoFinder, SolPrice, buildingKind, buildingTitle } from './info.js';
 import { MapController, COLORS } from './map.js';
 import { FEATURED, placeLabel } from './cities.js';
 import { distanceM, pointInPolygon } from './geo.js';
-import { $, copyText, debounce, fmtSol, h, isTouch, prefersReducedMotion, shortAddr, storage } from './util.js';
+import { $, avatar, copyText, debounce, fmtInt, fmtSol, h, isTouch, prefersReducedMotion, shortAddr, storage } from './util.js';
 import { Toasts } from './ui/feedback.js';
 import { BuildingPanel } from './ui/panel.js';
 import { Rail } from './ui/rail.js';
 import { Search } from './ui/search.js';
 import { WalletUI } from './ui/walletui.js';
-import {
-  Hero,
-  Stats,
-  createControls,
-  createLoader,
-  ensureConsent,
-  openHelp,
-  openOperator,
-  renderFatal,
-  renderNetPill,
-} from './ui/chrome.js';
+import { Hero, Stats, createControls, createLoader, ensureConsent, openHelp, openOperator, renderFatal, renderNetPill } from './ui/chrome.js';
 import { icon } from './ui/icons.js';
 
 const CAMERA_KEY = 'solworld:camera';
-const FEE_BUFFER = 20_000; // lamports kept aside for the network + priority fee
+const FEE_BUFFER = 20_000; // lamports kept aside for network + priority fees
+const DEMO_COIN = { mint: 'DemoMint1111111111111111111111111111111111111', symbol: 'DEMO', prices: [{ from: 0, lamportsPerToken: 1_000 }] };
+const DEMO_HOLDINGS = 1_000_000; // demo $DEMO tokens (worth 1 SOL)
 
 class FriendlyError extends Error {}
 
@@ -49,7 +46,7 @@ function friendlyError(err) {
   const text = `${err?.message || err || ''} ${JSON.stringify(err?.data || '')}`;
   if (/insufficient|no record of a prior credit|0x1\b/i.test(text)) return 'Your wallet doesn’t have enough SOL for this.';
   if (/blockhash|expired|block height exceeded/i.test(text)) return 'The network was busy and the transaction expired. Please try again.';
-  if (/timed out|timeout/i.test(text)) return 'Solana is slow right now. If the payment went through, ownership will appear shortly.';
+  if (/timed out|timeout/i.test(text)) return 'Solana is slow right now. If it went through, it will show up shortly.';
   if (/HTTP 4|HTTP 5|fetch|network/i.test(text)) return 'Couldn’t reach Solana. Check your connection and try again.';
   return err?.message || 'Please try again.';
 }
@@ -57,11 +54,14 @@ function friendlyError(err) {
 const VOID_REASONS = {
   taken: 'Someone got this building a moment before you.',
   underpaid: 'The payment was below the building price.',
-  'claim-used': 'This wallet has already claimed its free building.',
-  balance: `The wallet held too little SOL for a free claim.`,
+  revoked: 'The operator voided this action.',
+  unlinked: 'Your holder wallet isn’t linked yet.',
+  'no-credit': 'Not enough holder credit left.',
+  'not-owner': 'The seller no longer owned it.',
+  'bad-sale': 'The sale didn’t match the offer.',
 };
 
-function boot() {
+async function boot() {
   const app = $('#app');
   const settings = loadSettings(window.SOLWORLD_CONFIG || {});
   if (settings.fatal) return renderFatal(app, settings.fatal);
@@ -71,6 +71,8 @@ function boot() {
       body: 'For your safety, Solworld doesn’t run inside other websites. Open it directly to continue.',
     });
   }
+  const live = settings.live;
+  settings.memecoinView = live ? settings.memecoin : DEMO_COIN;
 
   const reduced = prefersReducedMotion();
   const loader = createLoader($('#loader'));
@@ -81,10 +83,15 @@ function boot() {
   const geocoder = new Geocoder({ photon: settings.services.photon });
   const photos = new PhotoFinder(settings.services);
   const solPrice = new SolPrice(settings.services.solPrice);
-  const registry = settings.live
+  const registry = live
     ? new ChainRegistry({ rpc, treasury: settings.treasury, cluster: settings.cluster, rules: settings.rules, storage, pollMs: settings.pollMs })
-    : new DemoRegistry({ rules: settings.rules, storage, seeds: () => demoSeeds(osm, settings) });
-  const wallet = new WalletManager({ cluster: settings.cluster, rpc, storage, allowDemo: !settings.live });
+    : new DemoRegistry({ rules: { ...settings.rules, memecoin: DEMO_COIN }, storage, seeds: () => demoSeeds(osm) });
+  const treasury = live ? settings.treasury : DEMO_TREASURY;
+  const ext = new WalletManager({ cluster: settings.cluster, rpc, storage: null });
+  const wallet = new BurnerWallet({ rpc, storage });
+  if (!live) wallet.simulate(storage);
+  await wallet.load();
+
   const wide = innerWidth > 980;
   const mapc = new MapController({
     container: $('#map'),
@@ -98,28 +105,66 @@ function boot() {
 
   let current = null; // { key, building, tileTop } once a building is resolved
   let selectSeq = 0;
+  let holderInfo = null; // { holder, tokens, account }
+  const priceCache = new Map();
+
+  const me = () => wallet.address;
+  const linkedHolder = () => (wallet.address ? registry.state.links.get(wallet.address) || null : null);
+  const creditLeft = () => {
+    const holder = linkedHolder();
+    const coin = registry.rules.memecoin;
+    if (!holder || !coin || holderInfo?.holder !== holder) return 0;
+    const value = holderInfo.tokens * tokenPriceAt(coin.prices, Math.floor(Date.now() / 1000));
+    return Math.max(0, Math.floor(value - (registry.state.holderSpent.get(holder) || 0)));
+  };
 
   const ctx = {
     settings,
     registry,
     wallet,
+    ext,
     osm,
     storage,
     toast,
-    currentPrice: () => priceAt(settings.prices, Math.floor(Date.now() / 1000)),
     kindLabel: (tags) => buildingKind(tags),
-    onConnect: () => walletUI.pick(),
+    priceFor: (building) => {
+      if (!priceCache.has(building.key)) priceCache.set(building.key, priceBuilding(building));
+      return priceCache.get(building.key);
+    },
+    creditLeft,
+    linkedHolder,
+    openOffersFor: (key) => openOffers(registry.state, key),
+    myOffers: () => (me() ? [...registry.state.offers.values()].filter((o) => o.status === 'open' && o.buyer === me()) : []),
+    incomingOffers: () => (me() ? [...registry.state.offers.values()].filter((o) => o.status === 'open' && registry.state.buildings.get(o.key)?.owner === me()) : []),
+    onConnect: () => walletUI.open(),
+    onDeposit: (need) => (wallet.exists ? walletUI.deposit({ need }) : walletUI.open()),
     onHelp: () => openHelp(ctx),
     onOperator: () => openOperator(ctx),
     onOwner: (address) => rail.showOwner(address),
     onOpenRecord: (rec) => openKey(rec.key, [rec.lng, rec.lat]),
+    onOpenOffer: (offer) => {
+      const b = registry.state.buildings.get(offer.key);
+      openKey(offer.key, b ? [b.lng, b.lat] : undefined);
+    },
     onShare: () => share(),
     onClose: () => closeSelection(),
     onAcquire: (kind) => acquire(kind),
+    onOffer: (lamports) => makeOffer(lamports),
+    onAccept: (offer) => acceptOffer(offer),
+    onCancelOffer: (offer) => cancelOffer(offer),
+    onSign: (sign) => setSign(sign),
     onToggleOrbit: () => (mapc.orbiting ? mapc.stopOrbit() : mapc.startOrbit()),
-    onMine: () => wallet.address && rail.showOwner(wallet.address),
+    onMine: () => me() && rail.showOwner(me()),
     onRailToggle: () => updatePadding(),
     onOwnerViewed: (records) => prefetchOutlines(records.slice(0, 40)),
+    holderPreview: (address) => holderPreview(address),
+    linkHolder: (address, pick) => linkHolder(address, pick),
+    withdraw: (to, value) => withdraw(to, value),
+    sendExternalTransfer: (lamports) => sendExternalTransfer(lamports),
+    operatorReady: () => live && ext.address === settings.treasury,
+    onRefund: (v, btn) => operatorAction('refund', v.sig, v.paid - (registry.state.refunded.get(v.sig) || 0), v.buyer || v.actor, btn),
+    onRevoke: (sig, lamports, to, btn) => operatorAction('revoke', sig, lamports, to, btn),
+    onAudit: (box, btn) => audit(box, btn),
   };
 
   /* ------------------------------------------------------------- UI */
@@ -131,7 +176,7 @@ function boot() {
   const hero = new Hero($('#hero'), {
     settings,
     onExplore: () => explore(),
-    onConnect: () => walletUI.pick(),
+    onConnect: () => walletUI.open(),
     onPreset: (p) => {
       hero.hide();
       mapc.flyToPreset(p);
@@ -345,94 +390,406 @@ function boot() {
     toast({ title: 'Link copied', body: 'Anyone with the link lands right on this building.', tone: 'success', duration: 3000 });
   }
 
-  /* ---------------------------------------------------- buy / claim */
+  /* ------------------------------------------------------ transactions */
+
+  /** Sends one Solworld action from the Solworld wallet (or simulates it in demo). */
+  async function sendAction({ lamports = 0, memo, extraRefs = [], demo = {} }) {
+    if (!live) {
+      const fields = parseMemo(memo) || {};
+      const sig = await registry.submit({ ...fields, signers: [me()], transfers: [{ s: me(), d: treasury, l: lamports }], ...demo });
+      if (lamports) wallet.adjustDemoBalance(-lamports);
+      return sig;
+    }
+    const { blockhash } = await rpc.getLatestBlockhash();
+    const message = actionMessage({ from: me(), treasury, reference: registry.address, lamports, memo, extraRefs, priorityFee: settings.priorityFeeMicroLamports }, blockhash);
+    const sig = await wallet.send(message);
+    await rpc.confirm(sig);
+    return sig;
+  }
+
+  /** Runs `fn` with panel/toast progress and reports the registry outcome. */
+  async function runAction({ label, pending, success, stage = 'sending', fn, onDone }) {
+    panel.setBusy(stage);
+    const progress = toast({ title: pending, body: label, tone: 'pending' });
+    try {
+      const sig = await fn((next) => {
+        if (next.stage) panel.setBusy(next.stage);
+        if (next.title) progress.update({ title: next.title });
+      });
+      if (live && sig) progress.update({ link: { href: settings.explorer.tx(sig), label: 'View transaction' } });
+      panel.setBusy('indexing');
+      const result = await registry.waitFor(sig);
+      if (result.ok) {
+        progress.update({ tone: 'mine', title: success, body: label, duration: 7000 });
+        onDone?.(result);
+      } else if (result.void) {
+        progress.update({ tone: 'error', title: 'Not recorded', body: `${VOID_REASONS[result.void.reason] || 'It didn’t meet the rules.'}${result.void.paid > 0 ? ' Your payment is flagged for a refund.' : ''}`, duration: 14000 });
+      } else {
+        progress.update({ tone: 'info', title: 'Still confirming', body: 'It was sent; it will show up as soon as Solana confirms it.', duration: 10000 });
+      }
+      return result;
+    } catch (err) {
+      if (isUserRejection(err)) progress.update({ tone: 'info', title: 'Cancelled', body: 'Nothing was sent.', duration: 3000 });
+      else {
+        console.warn('[solworld] action failed', err);
+        progress.update({ tone: 'error', title: 'That didn’t go through', body: friendlyError(err), duration: 10000 });
+      }
+      return null;
+    } finally {
+      panel.setBusy(null);
+      panel.refresh();
+      wallet.refreshBalance();
+    }
+  }
+
+  async function ensureWallet() {
+    if (!wallet.exists && !(await walletUI.open())) return false;
+    return ensureConsent(ctx);
+  }
+
+  const labelOf = (building) => buildingTitle(building.tags) || `Building ${building.key}`;
+
+  /* ---------------------------------------------------- buy / credit */
 
   async function acquire(kind) {
     if (!current) return;
     const { building } = current;
     const { key } = building;
-    const label = buildingTitle(building.tags) || `Building ${key}`;
-    if (!wallet.connected) {
-      const connected = await walletUI.pick();
-      if (!connected) return;
+    if (!(await ensureWallet())) return;
+    const price = ctx.priceFor(building).lamports;
+    const balance = (await wallet.refreshBalance()) ?? 0;
+    let extraRefs = [];
+    if (kind === 'buy' && balance < price + FEE_BUFFER) return walletUI.deposit({ need: price + FEE_BUFFER - balance });
+    if (kind === 'hold') {
+      await refreshHolder();
+      if (creditLeft() < price) return void toast({ title: 'Not enough credit', body: `This building is ${fmtSol(price)} SOL; you have ${fmtSol(creditLeft())} SOL of credit left.`, tone: 'error' });
+      if (live && balance < FEE_BUFFER) return walletUI.deposit({ need: FEE_BUFFER - balance });
+      if (live) extraRefs = [holderInfo.account];
     }
-    if (!(await ensureConsent(ctx))) return;
-    if (registry.state.buildings.has(key)) {
-      toast({ title: 'Already owned', body: 'Someone owns this building now.', tone: 'error' });
-      panel.refresh();
-      return;
-    }
-
-    const me = wallet.address;
-    const lamports = kind === 'buy' ? ctx.currentPrice() : 0;
-    const balance = (await wallet.refreshBalance()) ?? wallet.balance ?? 0;
-    if (kind === 'claim') {
-      if (registry.state.claimed.has(me)) return void toast({ title: 'Free building already claimed', body: 'Each wallet gets one.', tone: 'error' });
-      if (!(balance > settings.freeClaimMinLamports)) {
-        return void toast({ title: 'Not eligible yet', body: `Hold more than ${settings.freeClaimMinSol} SOL in this wallet to claim a building for free.`, tone: 'error' });
-      }
-    } else if (balance < lamports + FEE_BUFFER) {
-      return void toast({ title: 'Not enough SOL', body: `You need ${fmtSol(lamports + FEE_BUFFER)} SOL (price plus network fee). This wallet has ${fmtSol(balance)} SOL.`, tone: 'error' });
-    }
-
-    panel.setBusy('preparing');
-    const progress = toast({ title: kind === 'claim' ? 'Claiming your building' : 'Buying your building', body: label, tone: 'pending' });
-    try {
-      let sig;
-      if (!settings.live) {
-        panel.setBusy('simulating');
-        sig = await registry.submit({ kind, key, lng: building.center[0], lat: building.center[1], buyer: me, paid: lamports, pre: balance });
-        if (wallet.isDemo) {
-          wallet.balance -= lamports;
-          wallet.emit('change', wallet.snapshot());
-        }
-      } else {
-        await registry.sync().catch(() => {});
-        if (registry.state.buildings.has(key)) throw new FriendlyError('Someone just bought this building.');
-        const { blockhash } = await rpc.getLatestBlockhash();
-        const instructions = [computeUnitLimitInstruction(40_000)];
-        if (settings.priorityFeeMicroLamports) instructions.push(computeUnitPriceInstruction(settings.priorityFeeMicroLamports));
-        instructions.push(
-          transferInstruction({ from: me, to: settings.treasury, lamports, references: [registry.address] }),
-          memoInstruction(buildMemo(kind, key, building.center)),
-        );
-        const message = compileMessage({ payer: me, instructions, recentBlockhash: blockhash });
-        panel.setBusy('wallet');
-        progress.update({ title: 'Approve in your wallet', body: kind === 'claim' ? `Free claim · ${label}` : `${fmtSol(lamports)} SOL · ${label}` });
-        sig = await wallet.signAndSend(serializeUnsignedTransaction(message));
-        panel.setBusy('confirming');
-        progress.update({ title: 'Confirming on Solana…', link: { href: settings.explorer.tx(sig), label: 'View transaction' } });
-        await rpc.confirm(sig);
-        panel.setBusy('indexing');
-        progress.update({ title: 'Recording ownership…' });
-      }
-      const result = await registry.waitFor(sig);
-      if (result.ok) {
-        progress.update({ tone: 'mine', title: kind === 'claim' ? 'Claimed — it’s yours!' : 'Purchased — it’s yours!', body: label, duration: 8000 });
-        mapc.setSelection({ key, polygons: building.polygons, anchor: building.center, tone: 'mine' });
+    await registry.sync().catch(() => {});
+    if (registry.state.buildings.has(key)) return void toast({ title: 'Already owned', body: 'Someone just got this building. Make them an offer instead.', tone: 'error' });
+    const memo = buildMemo(kind, { key, center: building.center, price });
+    const demo = kind === 'hold' ? { tokens: [{ owner: linkedHolder(), mint: DEMO_COIN.mint, amount: DEMO_HOLDINGS }] } : {};
+    await runAction({
+      label: labelOf(building),
+      pending: kind === 'hold' ? 'Using your holder credit' : `Buying for ${fmtSol(price)} SOL`,
+      success: 'It’s yours!',
+      fn: () => sendAction({ lamports: kind === 'buy' ? price : 0, memo, extraRefs, demo }),
+      onDone: () => {
         mapc.pulse(building.center, COLORS.mine);
         celebrate();
-        wallet.refreshBalance();
-      } else if (result.void) {
-        progress.update({
-          tone: 'error',
-          title: 'Not recorded',
-          body: `${VOID_REASONS[result.void.reason] || 'The transaction didn’t meet the rules.'}${result.void.paid > 0 ? ' Your payment is flagged for a refund.' : ''}`,
-          duration: 14000,
-        });
-      } else {
-        progress.update({ tone: 'info', title: 'Still confirming', body: 'Your transaction was sent. Ownership will appear here as soon as Solana finalizes it.', duration: 10000 });
+        if (!live) scheduleDemoBidder(key, price);
+      },
+    });
+  }
+
+  /* ----------------------------------------------------------- market */
+
+  /** Finds (or creates) the building's nonce account whose authority is the owner. */
+  async function usableNonce(rec, report) {
+    const candidates = [];
+    if (rec.nonce) candidates.push(rec.nonce);
+    for (let n = 0; n < 4; n++) candidates.push(await nonceAddressFor(me(), rec.key, n));
+    for (let i = 0; i < candidates.length; i++) {
+      const address = candidates[i];
+      const account = await rpc.getAccountInfo(address);
+      const info = account && parseNonceAccount(account.data);
+      if (info?.authority === rec.owner) return { nonce: address, value: info.value };
+      if (!account && i > 0) {
+        report({ stage: 'nonce', title: 'Setting up offers for this building' });
+        const n = i - (rec.nonce ? 1 : 0);
+        const lamports = await rpc.getMinimumBalanceForRentExemption(80);
+        const { blockhash } = await rpc.getLatestBlockhash();
+        const sig = await wallet.send(createNonceMessage({ payer: me(), nonce: address, key: rec.key, n, lamports, authority: rec.owner, recentBlockhash: blockhash }));
+        await rpc.confirm(sig);
+        const created = parseNonceAccount((await rpc.getAccountInfo(address))?.data);
+        if (!created) throw new Error('Could not set up the offer account. Please try again.');
+        return { nonce: address, value: created.value };
       }
-    } catch (err) {
-      if (isUserRejection(err)) progress.update({ tone: 'info', title: 'Cancelled', body: 'Nothing was sent.', duration: 3000 });
-      else {
-        console.warn('[solworld] purchase failed', err);
-        progress.update({ tone: 'error', title: 'That didn’t go through', body: friendlyError(err), duration: 10000 });
-      }
-    } finally {
-      panel.setBusy(null);
-      panel.refresh();
     }
+    throw new Error('Could not set up offers for this building.');
+  }
+
+  async function makeOffer(price) {
+    if (!current) return;
+    const { building } = current;
+    if (!(await ensureWallet())) return;
+    const rec = registry.state.buildings.get(building.key);
+    if (!rec) return;
+    if (rec.owner === me()) return;
+    const balance = (await wallet.refreshBalance()) ?? 0;
+    const setup = live && !rec.nonce ? 1_500_000 : 0;
+    if (balance < price + setup + FEE_BUFFER) return walletUI.deposit({ need: price + setup + FEE_BUFFER - balance });
+    await runAction({
+      label: `${fmtSol(price)} SOL for ${labelOf(building)}`,
+      pending: 'Sending your offer',
+      success: 'Offer sent',
+      stage: 'signing',
+      fn: async (report) => {
+        if (!live) {
+          const sig = await registry.submit({ action: 'offer', key: rec.key, price, nonce: 'demo', nonceValue: 'demo', buyerSig: 'demo', signers: [me()], transfers: [{ s: me(), d: treasury, l: 0 }], tokens: [] });
+          scheduleDemoAcceptance(rec.key, price);
+          return sig;
+        }
+        const { nonce, value } = await usableNonce(rec, report);
+        report({ stage: 'signing' });
+        const sale = buildSaleMessage({ buyer: me(), seller: rec.owner, treasury, reference: registry.address, key: rec.key, price, feeBps: settings.feeBps, nonce, nonceValue: value });
+        const buyerSig = base58Encode(await wallet.sign(sale.bytes));
+        report({ stage: 'sending', title: 'Publishing your offer' });
+        return sendAction({ memo: buildMemo('offer', { key: rec.key, price, nonce, nonceValue: value, buyerSig }) });
+      },
+      onDone: () => toast({ title: 'Keep the SOL in your wallet', body: 'If the owner accepts, the swap happens instantly. Cancel any time before that.', tone: 'info', duration: 7000 }),
+    });
+  }
+
+  async function acceptOffer(offer) {
+    const rec = registry.state.buildings.get(offer.key);
+    if (!rec || rec.owner !== me()) return;
+    const building = current?.key === offer.key ? current.building : { key: offer.key, tags: {} };
+    const fee = saleFee(offer.price, settings.feeBps);
+    await runAction({
+      label: `${fmtSol(offer.price)} SOL from ${shortAddr(offer.buyer)} · you receive ${fmtSol(offer.price - fee)} SOL`,
+      pending: 'Accepting offer',
+      success: `Sold for ${fmtSol(offer.price)} SOL`,
+      fn: async () => {
+        if (!live) {
+          const sig = await registry.submit({
+            action: 'sale',
+            key: offer.key,
+            price: offer.price,
+            signers: [offer.buyer, me()],
+            transfers: [
+              { s: offer.buyer, d: me(), l: offer.price - fee },
+              { s: offer.buyer, d: treasury, l: fee },
+            ],
+            tokens: [],
+          });
+          wallet.adjustDemoBalance(offer.price - fee);
+          return sig;
+        }
+        const account = await rpc.getAccountInfo(offer.nonce);
+        const info = account && parseNonceAccount(account.data);
+        if (!info || info.value !== offer.nonceValue) throw new FriendlyError('This offer has expired (another sale happened). Ask them to offer again.');
+        if (info.authority !== me()) throw new FriendlyError('This offer was made to a previous owner.');
+        const buyerBalance = await rpc.getBalance(offer.buyer);
+        if (buyerBalance < offer.price + 10_000) throw new FriendlyError('The buyer no longer has enough SOL for this offer.');
+        const sale = buildSaleMessage({ buyer: offer.buyer, seller: me(), treasury, reference: registry.address, key: offer.key, price: offer.price, feeBps: settings.feeBps, nonce: offer.nonce, nonceValue: offer.nonceValue });
+        const buyerSig = base58Decode(offer.buyerSig);
+        if (!(await verifySignature(buyerSig, sale.bytes, offer.buyer))) throw new FriendlyError('This offer’s signature is invalid.');
+        const wire = serializeUnsignedTransaction(sale);
+        placeSignature(wire, sale, offer.buyer, buyerSig);
+        await wallet.signInto(wire, sale);
+        const sig = await rpc.sendRawTransaction(wire);
+        await rpc.confirm(sig);
+        return sig;
+      },
+      onDone: () => {
+        celebrate();
+        if (building.center) mapc.pulse(building.center, COLORS.owned);
+      },
+    });
+  }
+
+  async function cancelOffer(offer) {
+    await runAction({
+      label: `${fmtSol(offer.price)} SOL offer`,
+      pending: 'Cancelling offer',
+      success: 'Offer cancelled',
+      fn: () => sendAction({ memo: buildMemo('cancel', { ref: offer.sig }) }),
+      onDone: () =>
+        live &&
+        toast({ title: 'Tip', body: 'Cancelling hides the offer everywhere. To be 100% sure it can never execute, keep your balance below the offer amount.', tone: 'info', duration: 8000 }),
+    });
+  }
+
+  async function setSign({ text, color }) {
+    if (!current) return;
+    const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const memo = buildMemo('sign', { key: current.key, color, text: clean });
+    if (!parseMemo(memo)) return void toast({ title: 'That sign is too long', body: 'Use up to 60 characters (emoji count extra).', tone: 'error' });
+    await runAction({ label: clean ? `“${clean}”` : 'Billboard removed', pending: 'Putting up your billboard', success: 'Billboard is live', fn: () => sendAction({ memo }) });
+  }
+
+  /* --------------------------------------------------- wallet actions */
+
+  async function withdraw(to, value) {
+    if (!live) {
+      const bal = wallet.balance ?? 0;
+      const amount = value === 'max' ? bal : value;
+      if (amount > bal) throw new Error('Not enough SOL in your Solworld wallet.');
+      wallet.adjustDemoBalance(-amount);
+      return null;
+    }
+    const sig = await wallet.withdraw(to, value, { priorityFee: settings.priorityFeeMicroLamports });
+    rpc.confirm(sig).then(() => wallet.refreshBalance()).catch(() => {});
+    return sig;
+  }
+
+  async function sendExternalTransfer(lamports) {
+    const { blockhash } = await rpc.getLatestBlockhash();
+    const message = compileMessage({ payer: ext.address, recentBlockhash: blockhash, instructions: [transferInstruction({ from: ext.address, to: me(), lamports })] });
+    const sig = await ext.signAndSend(serializeUnsignedTransaction(message));
+    rpc.confirm(sig).then(() => wallet.refreshBalance()).catch(() => {});
+    return sig;
+  }
+
+  async function holderTokens(address) {
+    const coin = registry.rules.memecoin;
+    if (!coin) throw new Error('No meme coin is set up yet.');
+    if (!live) return { tokens: DEMO_HOLDINGS, account: null };
+    const accounts = await rpc.getTokenAccountsByOwner(address, coin.mint);
+    const best = accounts.sort((a, b) => b.amount - a.amount)[0];
+    return { tokens: best?.amount || 0, account: best?.address || null };
+  }
+
+  async function refreshHolder() {
+    const holder = linkedHolder();
+    if (!holder) return (holderInfo = null);
+    try {
+      const t = await holderTokens(holder);
+      holderInfo = { holder, ...t };
+    } catch (err) {
+      console.warn('[solworld] holder balance failed', err);
+    }
+    walletUI.render();
+    panel.refresh();
+    return holderInfo;
+  }
+
+  async function holderPreview(address) {
+    const coin = registry.rules.memecoin;
+    const { tokens } = await holderTokens(address);
+    const value = Math.floor(tokens * tokenPriceAt(coin.prices, Math.floor(Date.now() / 1000)));
+    return { tokens, value, left: Math.max(0, value - (registry.state.holderSpent.get(address) || 0)) };
+  }
+
+  async function linkHolder(address, pick) {
+    if (!(await ensureWallet())) return false;
+    if (!live) {
+      await registry.submit({ action: 'link', holder: address, signers: [me(), address], transfers: [{ s: me(), d: treasury, l: 0 }], tokens: [] });
+      await refreshHolder();
+      toast({ title: `$${settings.memecoinView.symbol} linked`, body: `${fmtSol(creditLeft())} SOL of credit ready to spend.`, tone: 'mine' });
+      return true;
+    }
+    const account = await pick({ title: 'Verify your holder wallet', reason: `Connect ${shortAddr(address, 6, 6)} and approve one signature. It moves no tokens.` });
+    if (!account) return false;
+    try {
+      if (ext.address !== address) throw new Error(`You connected ${shortAddr(ext.address)} — switch your wallet app to ${shortAddr(address)} and try again.`);
+      const topUp = (wallet.balance ?? 0) < 1_000_000 ? 2_000_000 : 0;
+      const { blockhash } = await rpc.getLatestBlockhash();
+      const message = compileMessage({
+        payer: address,
+        recentBlockhash: blockhash,
+        instructions: [
+          transferInstruction({ from: me(), to: treasury, lamports: 0, references: [registry.address] }),
+          ...(topUp ? [transferInstruction({ from: address, to: me(), lamports: topUp })] : []),
+          memoInstruction(buildMemo('link', { holder: address }), [address]),
+        ],
+      });
+      const signed = await ext.signTransaction(serializeUnsignedTransaction(message));
+      await wallet.signInto(signed, message);
+      const sig = await rpc.sendRawTransaction(signed);
+      await rpc.confirm(sig);
+      const result = await registry.waitFor(sig);
+      if (!result.ok) throw new Error('The link wasn’t recorded. Please try again.');
+      await refreshHolder();
+      toast({ title: `$${settings.memecoinView.symbol} linked`, body: `${fmtSol(creditLeft())} SOL of credit ready.${topUp ? ' We also moved 0.002 SOL over for network fees.' : ''}`, tone: 'mine', duration: 8000 });
+      return true;
+    } finally {
+      ext.disconnect().catch(() => {});
+    }
+  }
+
+  /* --------------------------------------------------------- operator */
+
+  async function ensureTreasuryWallet() {
+    if (ext.address === settings.treasury) return true;
+    const account = await walletUI.pickExternal({ title: 'Connect your treasury wallet', reason: `Operator actions are signed by ${shortAddr(settings.treasury, 6, 6)}.` });
+    if (!account) return false;
+    if (ext.address !== settings.treasury) {
+      toast({ title: 'That’s not the treasury wallet', body: `Connect ${shortAddr(settings.treasury, 6, 6)} in your wallet app.`, tone: 'error' });
+      await ext.disconnect();
+      return false;
+    }
+    return true;
+  }
+
+  async function operatorAction(action, ref, lamports, to, btn) {
+    if (!live) return void toast({ title: 'Demo mode', body: 'Operator actions need a live treasury.', tone: 'info' });
+    if (!(await ensureTreasuryWallet())) return;
+    btn?.setAttribute('disabled', '');
+    const progress = toast({ title: action === 'refund' ? 'Sending refund' : 'Revoking', body: `Approve in your treasury wallet${lamports ? ` (${fmtSol(lamports)} SOL)` : ''}.`, tone: 'pending' });
+    try {
+      const { blockhash } = await rpc.getLatestBlockhash();
+      const message = compileMessage({
+        payer: settings.treasury,
+        recentBlockhash: blockhash,
+        instructions: [transferInstruction({ from: settings.treasury, to, lamports: Math.max(0, lamports), references: [registry.address] }), memoInstruction(buildMemo(action, { ref }))],
+      });
+      const sig = await ext.signAndSend(serializeUnsignedTransaction(message));
+      await rpc.confirm(sig);
+      await registry.sync().catch(() => {});
+      progress.update({ tone: 'success', title: action === 'refund' ? 'Refunded' : 'Revoked', body: '', link: { href: settings.explorer.tx(sig), label: 'View transaction' } });
+      btn?.replaceWith(h('span', { class: 'chip chip--xs' }, 'Done'));
+    } catch (err) {
+      btn?.removeAttribute('disabled');
+      progress.update({ tone: isUserRejection(err) ? 'info' : 'error', title: isUserRejection(err) ? 'Cancelled' : 'Failed', body: isUserRejection(err) ? '' : friendlyError(err) });
+    }
+  }
+
+  async function audit(box, btn) {
+    btn?.setAttribute('disabled', '');
+    box.replaceChildren(h('div', { class: 'search-loading' }, h('span', { class: 'spinner' }), 'Recomputing prices from OpenStreetMap…'));
+    const recs = [...registry.state.buildings.values()].filter((b) => b.acquired !== 'sale' && !b.seed).slice(-300);
+    try {
+      const found = await osm.buildingsByKeys(recs.map((r) => r.key));
+      const flagged = [];
+      for (const r of recs) {
+        const b = found.get(r.key);
+        if (!b) continue;
+        const expected = priceBuilding(b).lamports;
+        const moved = distanceM(b.center, [r.lng, r.lat]) > 120 && !b.polygons.some((p) => pointInPolygon([r.lng, r.lat], p));
+        if (r.price < expected * 0.8 || moved) flagged.push({ r, expected, moved });
+      }
+      box.replaceChildren(
+        ...(flagged.length
+          ? flagged.map(({ r, expected, moved }) =>
+              h(
+                'div',
+                { class: 'op-refund' },
+                avatar(r.owner, 26),
+                h('div', { class: 'grow' }, h('div', { class: 'mono' }, `${r.key} · ${shortAddr(r.owner)}`), h('small', null, moved ? 'Location in the memo doesn’t match the building' : `Paid ${fmtSol(r.price)} SOL, price is ${fmtSol(expected)} SOL`)),
+                h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => operatorAction('revoke', r.sig, r.acquired === 'buy' ? r.price : 0, r.owner, e.currentTarget) }, r.acquired === 'buy' ? 'Revoke & refund' : 'Revoke'),
+              ),
+            )
+          : [h('p', { class: 'op-empty' }, `All ${fmtInt(recs.length)} purchases checked — nothing underpriced.`)]),
+      );
+    } catch (err) {
+      box.replaceChildren(h('p', { class: 'op-empty' }, `Audit failed: ${friendlyError(err)}`));
+    } finally {
+      btn?.removeAttribute('disabled');
+    }
+  }
+
+  /* ------------------------------------------------------------- demo */
+
+  function scheduleDemoBidder(key, price) {
+    setTimeout(async () => {
+      if (registry.state.buildings.get(key)?.owner !== me()) return;
+      const bidder = base58Encode(await sha256(`solworld/demo-bidder/${key}`));
+      const offer = Math.round((price * (1.3 + Math.random() * 0.9)) / 1e5) * 1e5;
+      await registry.submit({ action: 'offer', key, price: offer, nonce: 'demo', nonceValue: 'demo', buyerSig: 'demo', signers: [bidder], transfers: [{ s: bidder, d: treasury, l: 0 }], tokens: [] });
+    }, 9000 + Math.random() * 6000);
+  }
+
+  function scheduleDemoAcceptance(key, price) {
+    setTimeout(async () => {
+      const rec = registry.state.buildings.get(key);
+      if (!rec || rec.owner === me() || price < rec.price * 1.1 || (wallet.balance ?? 0) < price) return;
+      const fee = saleFee(price, settings.feeBps);
+      await registry.submit({ action: 'sale', key, price, signers: [me(), rec.owner], transfers: [{ s: me(), d: rec.owner, l: price - fee }, { s: me(), d: treasury, l: fee }], tokens: [] });
+      wallet.adjustDemoBalance(-price);
+    }, 5000 + Math.random() * 4000);
   }
 
   function celebrate() {
@@ -488,36 +845,60 @@ function boot() {
 
   /* --------------------------------------------------------- wiring */
 
+  const toastedOffers = new Set();
   function syncOwnershipViews({ fresh = [], initial = false } = {}) {
-    const records = [...registry.state.buildings.values()];
-    mapc.setOwnership(records, wallet.address);
+    const state = registry.state;
+    const records = [...state.buildings.values()];
+    mapc.setOwnership(records, me());
     if (current) mapc.setSelection({ key: current.key, polygons: current.building.polygons, anchor: current.building.center, tone: toneFor(current.key) });
     rail.render();
-    stats.update(registry.state.totals);
-    hero.update(registry.state.totals);
+    stats.update(state.totals);
+    hero.update(state.totals);
     walletUI.render();
     panel.refresh();
     scheduleOutlines();
-    if (!initial) {
-      const news = fresh.filter((ev) => registry.state.bySig.get(ev.sig)?.record && ev.buyer !== wallet.address && !ev.seed);
-      if (news.length > 2) {
-        toast({ title: `${news.length} buildings just changed hands`, body: 'See the Activity tab for details.', tone: 'owned', duration: 4500 });
-      } else {
-        for (const ev of news) {
-          toast({
-            title: `${shortAddr(ev.buyer)} ${ev.kind === 'claim' ? 'claimed' : 'bought'} a building`,
-            body: placeLabel(ev.lat, ev.lng),
-            tone: 'owned',
-            duration: 4500,
-          });
-        }
-      }
+    if (initial) {
+      for (const o of ctx.incomingOffers()) toastedOffers.add(o.sig);
+      return;
     }
+    const news = [];
+    for (const ev of fresh) {
+      const rec = state.bySig.get(ev.sig)?.record;
+      if (!rec || ev.seed) continue;
+      if (rec.kind === 'offer' && rec.buyer !== me() && state.buildings.get(rec.key)?.owner === me() && !toastedOffers.has(rec.sig)) {
+        toastedOffers.add(rec.sig);
+        toast({
+          title: `New offer: ${fmtSol(rec.price)} SOL`,
+          body: `${shortAddr(rec.buyer)} wants ${buildingLabel(rec.key)}. Open it to accept.`,
+          tone: 'mine',
+          duration: 12000,
+          action: { label: 'View', onClick: () => ctx.onOpenOffer(rec) },
+        });
+      } else if (rec.kind === 'sale' && rec.seller === me()) {
+        toast({ title: `You sold a building for ${fmtSol(rec.price)} SOL`, body: `${buildingLabel(rec.key)} · the SOL is in your Solworld wallet.`, tone: 'mine', duration: 9000 });
+        wallet.refreshBalance();
+      } else if ((rec.kind === 'buy' || rec.kind === 'hold' || rec.kind === 'sale') && rec.owner !== me()) news.push(rec);
+    }
+    if (news.length > 2) toast({ title: `${news.length} buildings just changed hands`, body: 'See the Activity tab for details.', tone: 'owned', duration: 4500 });
+    else for (const r of news) toast({ title: `${shortAddr(r.owner)} ${r.kind === 'sale' ? 'bought from an owner' : 'got a building'}`, body: `${placeLabel(r.lat, r.lng)} · ${fmtSol(r.price)} SOL`, tone: 'owned', duration: 4500 });
+  }
+
+  function buildingLabel(key) {
+    const b = osm.byKey.get(key);
+    const rec = registry.state.buildings.get(key);
+    return (b && buildingTitle(b.tags)) || (rec ? `a building in ${placeLabel(rec.lat, rec.lng)}` : 'your building');
   }
 
   registry.on('change', syncOwnershipViews);
   registry.on('status', paintNet);
-  wallet.on('change', () => syncOwnershipViews({ initial: true }));
+  wallet.on('change', () => {
+    syncOwnershipViews({ initial: true });
+    refreshHolder();
+  });
+  wallet.on('balance', () => {
+    walletUI.render();
+    panel.refresh();
+  });
 
   mapc.on('pick', selectPick);
   mapc.on('point', (key) => {
@@ -579,21 +960,23 @@ function boot() {
       paintNet();
       registry.start();
       registry.sync?.().catch(() => {});
+      refreshHolder();
     })
     .catch((err) => {
       console.error('[solworld] registry failed to start', err);
       toast({ title: 'Can’t read the registry', body: friendlyError(err), tone: 'error' });
     });
   addEventListener('online', () => registry.sync().catch(() => {}));
+  if (wallet.exists) wallet.refreshBalance();
+  // Keep the Solworld wallet balance fresh (deposits arrive from outside).
+  setInterval(() => wallet.exists && document.visibilityState === 'visible' && wallet.refreshBalance(), live ? 30_000 : 60_000);
 
   // Handy for debugging from the console.
-  window.solworld = { settings, registry, wallet, map: mapc, osm };
+  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx };
 }
 
 /* -------------------------------------------------------------- demo */
 
-// Famous buildings pre-owned by demo wallets so the leaderboard isn't empty.
-// [lng, lat, search radius in meters]
 const LANDMARKS = [
   [-73.985664, 40.748440, 70], // Empire State Building
   [55.274376, 25.197197, 110], // Burj Khalifa
@@ -618,7 +1001,7 @@ const LANDMARKS = [
 ];
 const OWNER_PATTERN = [0, 1, 0, 2, 1, 3, 0, 4, 2, 5, 1, 0, 6, 3, 7, 2, 0, 8, 1, 4];
 
-async function demoSeeds(osm, settings) {
+async function demoSeeds(osm) {
   const owners = [];
   for (let i = 0; i < 9; i++) owners.push(base58Encode(await sha256(`solworld/demo-owner/${i}`)));
   const buildings = [];
@@ -632,28 +1015,20 @@ async function demoSeeds(osm, settings) {
     }
   }
   const now = Math.floor(Date.now() / 1000);
-  const claimed = new Set();
   const events = [];
   const used = new Set();
+  const signs = ['gm from the top', 'Not for sale', 'WAGMI', 'Solworld HQ'];
   buildings
     .filter((x) => x.building && !used.has(x.building.key) && used.add(x.building.key))
     .forEach(({ building, index }, n, list) => {
       const buyer = owners[OWNER_PATTERN[index % OWNER_PATTERN.length]];
       const time = now - (list.length - n) * 9 * 3600 - Math.floor(Math.random() * 3600);
-      const claim = !claimed.has(buyer);
-      claimed.add(buyer);
-      events.push({
-        sig: `demo-seed-${index}`,
-        slot: 0,
-        time,
-        kind: claim ? 'claim' : 'buy',
-        key: building.key,
-        lat: building.center[1],
-        lng: building.center[0],
-        buyer,
-        paid: claim ? 0 : priceAt(settings.prices, time),
-        pre: 3_000_000_000,
-      });
+      const price = priceBuilding(building).lamports;
+      const base = { slot: 0, time, signers: [buyer], tokens: [], pre: {} };
+      events.push({ ...base, sig: `demo-seed-${index}`, action: 'buy', key: building.key, lat: building.center[1], lng: building.center[0], price, transfers: [{ s: buyer, d: DEMO_TREASURY, l: price }] });
+      if (n % 3 === 0) {
+        events.push({ ...base, time: time + 60, sig: `demo-seed-sign-${index}`, action: 'sign', key: building.key, color: n % 8, text: signs[(n / 3) % signs.length], transfers: [{ s: buyer, d: DEMO_TREASURY, l: 0 }] });
+      }
     });
   return events;
 }

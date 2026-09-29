@@ -469,9 +469,18 @@ export class MapController extends Emitter {
     const m = this.map;
     return new Promise((resolve) => {
       const t0 = performance.now();
+      let frames = 0;
+      const onRender = () => frames++;
+      m.on('render', onRender);
+      m.triggerRepaint();
       const check = () => {
-        if ((!m.isMoving() && m.areTilesLoaded() && m.isStyleLoaded()) || performance.now() - t0 > maxMs) resolve();
-        else setTimeout(check, 60);
+        // At least two fresh frames drawn since we started, so what's on screen
+        // (and what queryRenderedFeatures sees) matches the current camera.
+        const ready = frames >= 2 && !m.isMoving() && m.areTilesLoaded() && m.isStyleLoaded();
+        if (ready || performance.now() - t0 > maxMs) {
+          m.off('render', onRender);
+          resolve();
+        } else setTimeout(check, 50);
       };
       setTimeout(check, 30);
     });

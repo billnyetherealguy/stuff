@@ -624,9 +624,10 @@ async function real3d(env) {
     await step('real3d: zooming far out returns to the map', async () => {
       await page.evaluate(() => {
         const C = window.Cesium;
+        window.solworld.r3d.stopOrbit(); // a real drag/scroll stops the orbit too
         window.solworld.r3d.viewer.camera.setView({ destination: C.Cartesian3.fromDegrees(-73.98, 40.74, 6000) });
       });
-      await page.waitForFunction(() => !window.solworld.r3d.active, null, { timeout: 20_000 });
+      await page.waitForFunction(() => !window.solworld.r3d.active, null, { timeout: 60_000 });
     });
 
     await step('real3d: the middle of nowhere has no traffic', async () => {

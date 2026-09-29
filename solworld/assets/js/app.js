@@ -270,7 +270,16 @@ async function boot() {
       console.warn('[solworld] realistic 3D unavailable', err);
       r3d.exit();
       r3dArmed = false;
-      toast({ title: 'Realistic 3D didn’t load', body: /403|401|key|denied/i.test(String(err?.message || err)) ? 'The Google 3D Tiles key was refused. Check the key (Operator tools).' : 'Your device or connection couldn’t load it. The map still works.', tone: 'error' });
+      const why = String(err?.message || err?.statusCode || err || '').slice(0, 140);
+      const refused = /403|401|key|denied|forbidden|referer|referrer/i.test(why) || err?.statusCode === 403;
+      toast({
+        title: 'Realistic 3D didn’t load',
+        body: refused
+          ? `Google refused the key. Check: Map Tiles API enabled, billing on, and the key's website restriction matches ${location.origin}. (${why})`
+          : `Your device or connection couldn’t load it (${why || 'unknown error'}). The map still works.`,
+        tone: 'error',
+        duration: 15000,
+      });
     } finally {
       r3dBusy = false;
       paint3DButton();
@@ -1203,7 +1212,10 @@ async function boot() {
     mapc.setOwnership(records, me());
     if (current) mapc.setSelection({ key: current.key, polygons: current.building.polygons, anchor: current.building.center, tone: toneFor(current.key) });
     if (current && r3d.active) r3d.setSelection({ polygons: current.building.polygons, height: Math.max(current.tileTop || 0, buildingHeights(current.building.tags).top), tone: toneFor(current.key) });
-    if (!settings.realistic3d.googleKey && registry.state.key3d) r3d.setKey(registry.state.key3d);
+    if (!settings.realistic3d.googleKey && registry.state.key3d) {
+      r3d.setKey(registry.state.key3d);
+      paint3DButton();
+    }
     rail.render();
     stats.update(state.totals);
     hero.update(state.totals);

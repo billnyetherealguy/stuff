@@ -368,7 +368,8 @@ export class Realistic3D extends Emitter {
     if (!this.active) return;
     this.active = false;
     this.stopOrbit();
-    for (const p of this.agentPrims || []) p.show = false;
+    for (const entry of this.agentModels?.values() || []) if (entry.model) this.viewer.scene.primitives.remove(entry.model);
+    this.agentModels?.clear();
     this.lights?.removeAll();
     this.container.classList.remove('is-active');
     this.emit('exit');
@@ -390,6 +391,21 @@ export class Realistic3D extends Emitter {
       duration: 2.2,
       // Only start circling if nobody took over the camera during the flight.
       complete: () => this.flight === flight && this.startOrbit(target),
+    });
+  }
+
+  /** Swoops the camera down to eye level in front of `target` (before dropping into Street View). */
+  async swoopTo([lng, lat]) {
+    if (!this.viewer) return;
+    const Cesium = this.Cesium;
+    this.stopOrbit();
+    const ground = (await this.groundAt([lng, lat])) ?? this.lastGround ?? 0;
+    const heading = this.viewer.camera.heading;
+    const back = 28;
+    const kx = 111_320 * Math.cos((lat * Math.PI) / 180);
+    const eye = Cesium.Cartesian3.fromDegrees(lng - (Math.sin(heading) * back) / kx, lat - (Math.cos(heading) * back) / 110_574, ground + 2.2);
+    await new Promise((resolve) => {
+      this.viewer.camera.flyTo({ destination: eye, orientation: { heading, pitch: Cesium.Math.toRadians(4), roll: 0 }, duration: 1.6, complete: resolve, cancel: resolve });
     });
   }
 
@@ -457,58 +473,71 @@ export class Realistic3D extends Emitter {
     });
   }
 
-  /** Moves the simulated cars and people (traffic.js) through the real 3D city. */
+  /**
+   * Moves the simulated cars and people (traffic.js) through the real 3D city
+   * as real 3D models (assets/models: cars with lit head/taillights, people
+   * with a walk cycle). Only the ones nearest the camera are drawn.
+   */
   setAgents(agents) {
     if (!this.viewer || !this.active) return;
     const Cesium = this.Cesium;
     const scene = this.viewer.scene;
-    this.agentPrims ||= [];
+    this.agentModels ||= new Map(); // agent id -> { model, kind }
     if (!this.lights) this.lights = scene.primitives.add(new Cesium.PointPrimitiveCollection());
     const ground = this.lastGround ?? 0;
     const night = this.phase && this.phase !== 'day';
-    const scratch = new Cesium.Matrix4();
-    for (let i = 0; i < agents.length; i++) {
-      const a = agents[i];
-      let prim = this.agentPrims[i];
-      if (!prim) {
-        prim = scene.primitives.add(
-          new Cesium.Primitive({
-            geometryInstances: new Cesium.GeometryInstance({
-              id: `agent-${i}`,
-              geometry: Cesium.BoxGeometry.fromDimensions({ dimensions: new Cesium.Cartesian3(1, 1, 1), vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT }),
-              attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString(a.color)) },
-            }),
-            appearance: new Cesium.PerInstanceColorAppearance({ translucent: false }),
-            asynchronous: false,
-          }),
-        );
-        prim.color = a.color;
-        this.agentPrims.push(prim);
+    const cam = Cesium.Cartographic.fromCartesian(this.viewer.camera.positionWC);
+    const camLng = Cesium.Math.toDegrees(cam.longitude);
+    const camLat = Cesium.Math.toDegrees(cam.latitude);
+    const kx = 111_320 * Math.cos((camLat * Math.PI) / 180);
+    const dist2 = (a) => ((a.lng - camLng) * kx) ** 2 + ((a.lat - camLat) * 110_574) ** 2;
+    const nearest = (kind, n) => agents.filter((a) => a.kind === kind).sort((x, y) => dist2(x) - dist2(y)).slice(0, n);
+    const shown = [...nearest('car', 70), ...nearest('person', 90)];
+    const keep = new Set();
+    const base = this.modelBase || new URL('../models/', import.meta.url).href;
+    for (const a of shown) {
+      keep.add(a.id);
+      let entry = this.agentModels.get(a.id);
+      if (!entry) {
+        entry = { kind: a.kind, model: null };
+        this.agentModels.set(a.id, entry);
+        Cesium.Model.fromGltfAsync({ url: `${base}${a.model}.glb`, scene, incrementallyLoadTextures: false })
+          .then((model) => {
+            if (!this.agentModels.has(a.id)) return model.destroy();
+            entry.model = scene.primitives.add(model);
+            if (a.kind === 'person') {
+              model.readyEvent.addEventListener(() => {
+                model.activeAnimations.addAll({ loop: Cesium.ModelAnimationLoop.REPEAT, multiplier: 1.1 + (a.id % 5) * 0.08 });
+              });
+            }
+          })
+          .catch(() => {});
       }
-      prim.show = true;
-      if (prim.color !== a.color && prim.ready) {
-        const attrs = prim.getGeometryInstanceAttributes(`agent-${i}`);
-        if (attrs) attrs.color = Cesium.ColorGeometryInstanceAttribute.toValue(Cesium.Color.fromCssColorString(a.color));
-        prim.color = a.color;
+      if (entry.model) {
+        const pos = Cesium.Cartesian3.fromDegrees(a.lng, a.lat, ground + 0.05);
+        // Our heading is clockwise from north; Cesium's is clockwise from east.
+        entry.model.modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(pos, new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(a.heading - 90), 0, 0));
+        entry.model.show = true;
       }
-      const pos = Cesium.Cartesian3.fromDegrees(a.lng, a.lat, ground + a.height / 2 + 0.1);
-      // Our heading is clockwise from north; Cesium's is clockwise from east.
-      const frame = Cesium.Transforms.headingPitchRollToFixedFrame(pos, new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(a.heading - 90), 0, 0), undefined, undefined, scratch);
-      prim.modelMatrix = Cesium.Matrix4.multiplyByScale(frame, new Cesium.Cartesian3(a.length, a.width, a.height), new Cesium.Matrix4());
     }
-    for (let i = agents.length; i < this.agentPrims.length; i++) this.agentPrims[i].show = false;
+    for (const [id, entry] of this.agentModels) {
+      if (keep.has(id)) continue;
+      if (entry.model) scene.primitives.remove(entry.model);
+      this.agentModels.delete(id);
+    }
     this.lights.removeAll();
     if (night) {
-      for (const a of agents) {
+      // A soft halo in front of headlights and behind taillights (the lamps themselves glow in the models).
+      for (const a of shown) {
         if (a.kind !== 'car') continue;
         const h = Cesium.Math.toRadians(a.heading);
-        const kx = 111_320 * Math.cos(Cesium.Math.toRadians(a.lat));
-        for (const [d, color] of [[a.length / 2 + 0.2, '#fff4d6'], [-(a.length / 2 + 0.2), '#ff3b30']]) {
+        const k = 111_320 * Math.cos(Cesium.Math.toRadians(a.lat));
+        for (const [d, color, size] of [[a.length / 2 + 0.6, '#fff4d6', 9], [-(a.length / 2 + 0.3), '#ff3b30', 5]]) {
           this.lights.add({
-            position: Cesium.Cartesian3.fromDegrees(a.lng + (Math.sin(h) * d) / kx, a.lat + (Math.cos(h) * d) / 110_574, ground + 0.8),
-            color: Cesium.Color.fromCssColorString(color),
-            pixelSize: d > 0 ? 7 : 5,
-            scaleByDistance: new Cesium.NearFarScalar(30, 1.6, 900, 0.3),
+            position: Cesium.Cartesian3.fromDegrees(a.lng + (Math.sin(h) * d) / k, a.lat + (Math.cos(h) * d) / 110_574, ground + 0.7),
+            color: Cesium.Color.fromCssColorString(color).withAlpha(0.85),
+            pixelSize: size,
+            scaleByDistance: new Cesium.NearFarScalar(20, 1.8, 800, 0.25),
           });
         }
       }

@@ -13,7 +13,6 @@ const CAR_ROADS = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiar
 const SIDEWALK_ROADS = new Set(['primary', 'secondary', 'tertiary', 'minor']);
 const FOOT_PATHS = new Set(['path', 'pedestrian', 'footway']);
 
-const CAR_COLORS = ['#e8e8ea', '#1d1f24', '#8d939c', '#2b3a55', '#7a1f24', '#f2f2f2', '#3a3d42', '#c9ccd1', '#f5c518', '#274a2e', '#5b6f8a', '#b3281e'];
 const PEOPLE_COLORS = ['#2d3440', '#6b2d2d', '#2f4f6f', '#c9b28b', '#1f1f1f', '#7a6a55', '#3f5a3a', '#b04a6a', '#d8d2c4', '#4b3b6b'];
 
 function rng(seed) {
@@ -43,6 +42,7 @@ export class Traffic {
     this.lanes = { car: [], foot: [] };
     this.rand = rng(Date.now() & 0xffff);
     this.center = null;
+    this.ids = 0;
   }
 
   /**
@@ -96,6 +96,25 @@ export class Traffic {
     return { pts, cum, length: cum[cum.length - 1], cls, width };
   }
 
+  /** Which vehicle (3D model in assets/models) and its real size. Cabs in busy cities. */
+  _vehicle() {
+    const r = this.rand;
+    const x = r();
+    const cabs = (this.want?.density || 0) > 1.5 ? 0.18 : 0.03;
+    let v;
+    if (x < 0.025) v = { model: 'bus', length: 12, width: 2.55, height: 3.1, color: '#2b5aa8' };
+    else if (x < 0.07) v = { model: 'van', length: 5.6, width: 2, height: 2.3, color: '#eceff2' };
+    else if (x < 0.07 + cabs) v = { model: 'taxi', length: 4.7, width: 1.85, height: 1.5, color: '#f2b705' };
+    else if (x < 0.3 + cabs) {
+      const i = Math.floor(r() * 3);
+      v = { model: `suv-${i}`, length: 4.8, width: 1.95, height: 1.8, color: ['#1d1f22', '#f1f1f3', '#51607a'][i] };
+    } else {
+      const i = Math.floor(r() * 6);
+      v = { model: `sedan-${i}`, length: 4.6, width: 1.85, height: 1.45, color: ['#e9e9ec', '#16181c', '#8f959e', '#23324d', '#7c1c20', '#3d4652'][i] };
+    }
+    return { ...v, id: ++this.ids };
+  }
+
   _spawn(kind) {
     const r = this.rand;
     const lanes = kind === 'car' ? this.lanes.car : this.lanes.foot;
@@ -111,10 +130,7 @@ export class Traffic {
         s: r() * lane.length,
         speed: (fast ? 14 : 6) + r() * (fast ? 10 : 7),
         offset: (lane.width / 2 + 0.2) * 0.62, // keep right of the center line
-        color: CAR_COLORS[Math.floor(r() * CAR_COLORS.length)],
-        length: r() < 0.08 ? 9 : 4.3 + r() * 0.6, // a few vans/buses
-        width: 1.9,
-        height: r() < 0.08 ? 2.8 : 1.45,
+        ...this._vehicle(),
       };
     }
     return {
@@ -126,6 +142,8 @@ export class Traffic {
       offset: lane.side ? lane.width + 2.2 + r() * 1.6 : (r() - 0.5) * 2,
       side: lane.side || 1,
       color: PEOPLE_COLORS[Math.floor(r() * PEOPLE_COLORS.length)],
+      model: `person-${Math.floor(r() * 8)}`,
+      id: ++this.ids,
       length: 0.45,
       width: 0.5,
       height: 1.6 + r() * 0.25,
@@ -177,7 +195,7 @@ export class Traffic {
       const x = x0 + (x1 - x0) * t + nx * a.offset;
       const y = y0 + (y1 - y0) * t + ny * a.offset;
       const heading = (Math.atan2(dx * a.dir, dy * a.dir) * 180) / Math.PI;
-      out.push({ kind: a.kind, lng: cx + x / kx, lat: cy + y / M_PER_DEG_LAT, heading, color: a.color, length: a.length, width: a.width, height: a.height });
+      out.push({ id: a.id, model: a.model, kind: a.kind, paused: a.pause > 0, lng: cx + x / kx, lat: cy + y / M_PER_DEG_LAT, heading, color: a.color, length: a.length, width: a.width, height: a.height });
     }
     return out;
   }

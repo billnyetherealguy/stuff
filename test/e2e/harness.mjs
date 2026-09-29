@@ -13,6 +13,7 @@ import { createTiles } from './tiles.mjs';
 import { createServices } from './services.mjs';
 import { Chain } from './chain.mjs';
 import { createTiles3d } from './tiles3d.mjs';
+import { FAKE_MAPS_JS } from './fakemaps.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SITE = path.resolve(HERE, '..', '..', 'solworld');
@@ -356,6 +357,7 @@ export async function launch({ origin, tiles, services, chain, config, viewport 
       if (!file.startsWith(CESIUM) || !fs.existsSync(file)) return route.fulfill({ status: 404, body: '' });
       return route.fulfill({ status: 200, contentType: TYPES[path.extname(file)] || (file.endsWith('.wasm') ? 'application/wasm' : 'application/octet-stream'), headers: { 'access-control-allow-origin': '*' }, body: fs.readFileSync(file) });
     }
+    if (host === 'maps.googleapis.com' && url.pathname === '/maps/api/js') return route.fulfill({ status: 200, contentType: 'text/javascript', body: FAKE_MAPS_JS });
     if (host === 'assets.ion.cesium.com') return route.fulfill({ status: 200, contentType: 'image/png', headers: { 'access-control-allow-origin': '*' }, body: encodePng(16, () => [255, 255, 255]) });
     if (host === 'tile.googleapis.com') {
       const t3 = (services.tiles3d ||= createTiles3d(tiles.world));

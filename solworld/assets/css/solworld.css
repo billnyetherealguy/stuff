@@ -3886,3 +3886,73 @@ body.is-3d .controls .ctrl-group,
 body.is-3d #hint {
   display: none;
 }
+
+/* ==========================================================================
+   v5 — drop into the street (in-site Street View)
+   ========================================================================== */
+
+.street {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(1.04);
+  transition: opacity 0.6s var(--ease), transform 0.8s var(--ease);
+}
+.street.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+.street-pano {
+  position: absolute;
+  inset: 0;
+}
+.street-top {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  pointer-events: none;
+}
+.street-caption,
+.street-close {
+  pointer-events: auto;
+  background: var(--glass-2);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  color: var(--ink);
+}
+.street-caption {
+  display: grid;
+  gap: 2px;
+  padding: 10px 14px;
+  max-width: 60vw;
+}
+.street-caption small {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+.street-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+body.has-street .controls,
+body.has-street .rail,
+body.has-street #panel {
+  visibility: hidden;
+}

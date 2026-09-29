@@ -350,7 +350,7 @@ export function openOperator(ctx) {
     { class: 'form op-coin' },
     ctx.key3dActive() ? h('div', { class: 'holder-preview' }, h('b', null, 'Realistic 3D is on'), ' · zoom into any city to see it') : h('p', { class: 'op-empty' }, 'Off. Add a Google key to show real 3D buildings with real photo textures when people zoom in.'),
     keyIn,
-    h('p', { class: 'modal-fine' }, 'In Google Cloud: create a project, enable the “Map Tiles API”, create an API key, and restrict it to your site’s address (HTTP referrers). The key becomes public, so the restriction matters.'),
+    h('p', { class: 'modal-fine' }, 'In Google Cloud: create a project, enable the “Map Tiles API” (3D) and “Maps JavaScript API” (walking the street), create an API key, and restrict it to your site’s address (Websites). The key becomes public, so the restriction matters.'),
     h('div', { class: 'field-row' }, h('button', { class: 'btn btn--primary btn--sm', onclick: (e) => keyIn.value.trim() && ctx.onSetKey3d(keyIn.value.trim(), e.currentTarget) }, 'Save key')),
   );
 

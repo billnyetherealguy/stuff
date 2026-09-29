@@ -31,7 +31,24 @@ export class BuildingPanel {
   build() {
     this.mediaStage = h('div', { class: 'media-stage' });
     this.mediaTabs = h('div', { class: 'media-tabs', role: 'tablist' });
-    this.streetLink = h('a', { class: 'media-chip', target: '_blank', rel: 'noopener', title: 'Open Street View in Google Maps' }, h('span', { svg: icon('street', { size: 14 }) }), 'Street View', h('span', { svg: icon('external', { size: 12 }) }));
+    this.streetLink = h(
+      'a',
+      {
+        class: 'media-chip media-chip--street',
+        target: '_blank',
+        rel: 'noopener',
+        title: 'Walk the real street here',
+        onclick: (e) => {
+          // With a Google key, drop into the street right here instead of leaving the site.
+          if (this.ctx.streetAvailable?.() && this.state?.center) {
+            e.preventDefault();
+            this.ctx.onStreet(this.state.center);
+          }
+        },
+      },
+      h('span', { svg: icon('street', { size: 14 }) }),
+      'Street View',
+    );
     this.statusPill = h('span', { class: 'status-pill' });
     this.orbitBtn = h('button', { class: 'icon-btn icon-btn--ghost', title: 'Orbit', 'aria-label': 'Orbit camera', svg: icon('orbit'), onclick: () => this.ctx.onToggleOrbit() });
     this.shareBtn = h('button', { class: 'icon-btn icon-btn--ghost', title: 'Share', 'aria-label': 'Share this building', svg: icon('share'), onclick: () => this.ctx.onShare() });

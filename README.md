@@ -48,9 +48,11 @@ The `memecoin` block in `config.js` still works as an alternative, but the on-si
 Up close, Solworld switches to **Google's Photorealistic 3D Tiles**: the same real 3D city models as Google Earth, with real photo textures on every wall and roof. It's drawn with CesiumJS, which loads only when someone zooms in. It needs a Google key:
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com), create a project, and add a billing account. Google gives a free monthly allowance; check their current Map Tiles API pricing.
-2. **APIs & Services → Library**, search **Map Tiles API**, and click **Enable**.
-3. **APIs & Services → Credentials → Create credentials → API key**. Under **Application restrictions**, choose **Websites** and add your site (e.g. `https://yoursite.netlify.app/*`). Under **API restrictions**, allow only the Map Tiles API.
+2. **APIs & Services → Library**: enable **Map Tiles API** (realistic 3D) and **Maps JavaScript API** (walking the street inside the site).
+3. **APIs & Services → Credentials → Create credentials → API key**. Under **Application restrictions**, choose **Websites** and add your site (e.g. `https://yoursite.netlify.app/*`). Under **API restrictions**, allow only those two APIs.
 4. On your site, open **`/#/operator`**, paste the key under **Realistic 3D**, tap **Save key**, and approve with your treasury wallet. (Or put it in `config.js` → `realistic3d.googleKey`.)
+
+**Walk the street without leaving the site:** tap **Street View** on any building, or **Walk here** while zoomed in. The camera swoops down and Google Street View opens full screen inside Solworld, pointed at the building. It shows the real sidewalks (cracks and all), trees, parked cars and storefronts. The building's own poster (For sale / Owned / its billboard) and nearby owners' billboards stand in the street, and tapping one opens that building. **Back up** returns to the map.
 
 After that, zooming into any city switches to real 3D, and zooming out goes back to the map. People can also tap **Realistic 3D / Map view** in the corner. At night (following the real sun there), the real textures are darkened and a see-through glow is added only where the windows are in the photo textures, as if some rooms had their lights on.
 
@@ -138,7 +140,7 @@ It also shows totals: revenue, volume, buildings, owners and sales.
 - **The real sun:** lighting follows the sun's actual position at the place you're looking at, right now. By day, the light comes from where the sun is, glass reflects the sky and the satellite ground is bright. At golden hour everything turns warm. At night, walls go dark, some windows light up with a soft glow, and neon signs glow where real ones are: bars, restaurants, shops, cinemas, theatres and hotels from OpenStreetMap, each in its own color.
 - **Photos match the time of day:** after dark, a building shows a night photo when one exists (Wikidata "nighttime view" or Wikimedia Commons), with a soft bloom so the lit windows glow. The satellite close-up is graded to night with glowing windows. A chip shows whether it's day, golden hour or night there now.
 - **Real photos on the buildings:** when you open a building that has a real photo, the 3D building is wrapped in that photo. After dark, the lit windows glow: night photos get a soft bloom, and day photos are darkened with warm window lights added.
-- **Street life:** simulated cars drive the real roads and people walk the sidewalks and footpaths, both on the map and in realistic 3D. How many depends on how busy the place is in real life: packed in Midtown Manhattan or downtown DC, a handful in suburbs and towns, none in the countryside. Fewer people are out at night, and cars show headlights and taillights after dark.
+- **Street life:** simulated cars (sedans, SUVs, yellow cabs in big cities, vans, buses, all with working head- and taillights) drive the real roads and people walk the sidewalks and footpaths, both on the map and in realistic 3D. How many depends on how busy the place is in real life: packed in Midtown Manhattan or downtown DC, a handful in suburbs and towns, none in the countryside. Fewer people are out at night, and cars show headlights and taillights after dark.
 - **Every building loads:** building lookups ask several OpenStreetMap servers at once and take the first answer, and buildings around where you're looking load in the background. If the servers are down or slow, the building still opens straight from the map and stays buyable, identified by its footprint (`g…` keys). Searching a street address opens the house at that address.
 - **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org), identified by its OSM element (`w…`/`r…`). Clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test.
 - **What it looks like:** a satellite close-up with the footprint traced, a real photo from Wikidata/Wikimedia Commons when there is one, and a Google Street View link.
@@ -174,6 +176,8 @@ solworld/                 the website (deploy this folder)
   assets/js/facade.js     procedural lit-window textures
   assets/js/realistic3d.js  real 3D view (CesiumJS + Google 3D Tiles), night window-glow shader
   assets/js/traffic.js    simulated cars and people, density by how busy the place is
+  assets/js/streetview.js drop into the street: in-site Google Street View with posters
+  assets/models/          our own CC0 3D cars and walking people (test/tools/build-models.mjs)
   assets/js/sun.js        real sun position (lighting, day/night)
   assets/js/ui/           panel, wallet, leaderboard, search, modals
   vendor/                 MapLibre GL JS 6.11.2, @noble/ed25519 3.2.0, uqr 0.1.3

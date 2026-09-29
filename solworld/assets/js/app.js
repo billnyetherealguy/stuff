@@ -23,6 +23,7 @@ import { priceBuilding } from './pricing.js';
 import { sunPosition } from './sun.js';
 import { buildingSkin } from './skin.js';
 import { Realistic3D } from './realistic3d.js';
+import { StreetDrop } from './streetview.js';
 import { Traffic } from './traffic.js';
 import { SIGN_CLASSES } from './mapstyle.js';
 import { OsmClient, buildingHeights, geoKey, geoKeyCenter, isOsmKey } from './osm.js';
@@ -172,6 +173,8 @@ async function boot() {
     onRevoke: (sig, lamports, to, btn) => operatorAction('revoke', sig, lamports, to, btn),
     onAudit: (box, btn) => audit(box, btn),
     onSetCoin: (coin, btn) => setCoin(coin, btn),
+    streetAvailable: () => street.available,
+    onStreet: (lngLat) => dropIn(lngLat),
     onSetKey3d: (apiKey, btn) => publishSetting(buildMemo('tiles', { apiKey }), 'Realistic 3D is on', btn),
     key3dActive: () => !!(settings.realistic3d.googleKey || registry.state.key3d || settings.realistic3d.ionToken),
     coinMarket: (mint) => coinMarket(mint),
@@ -198,6 +201,7 @@ async function boot() {
     onHidden: () => {
       setTimeout(() => {
         paint3DButton();
+        paintWalk();
         refreshTraffic(true);
       }, 1200);
       if (innerWidth > 1180) rail.setOpen(true);
@@ -350,6 +354,64 @@ async function boot() {
       billboards: records.filter((r) => r.sign?.text).map((r) => ({ lng: r.lng, lat: r.lat, text: r.sign.text, color: SIGN_COLORS[r.sign.color] || SIGN_COLORS[0], height: buildingHeights(osm.byKey.get(r.key)?.tags || {}).top })),
       signs,
     });
+  }
+
+  /* ------------------------------------------------ drop into the street */
+
+  const street = new StreetDrop({ root: $('#street') });
+  street.setKey(settings.realistic3d.googleKey);
+  const walkButton = h('button', { class: 'ctrl-pill glass is-hidden', onclick: () => dropIn() }, h('span', { svg: icon('street', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Walk here'));
+  $('#controls').append(walkButton);
+  const paintWalk = () => walkButton.classList.toggle('is-hidden', !(street.available && !hero.visible && (r3d.active || mapc.zoom >= 15.5)));
+  mapc.map.on('zoomend', paintWalk);
+  r3d.on('enter', paintWalk);
+  r3d.on('exit', paintWalk);
+
+  /** Posters in the street: this building's own, plus owners' billboards nearby. */
+  function streetPosters(target) {
+    const posters = [];
+    const near = (lng, lat) => distanceM(target, [lng, lat]) < 450;
+    const open = (key, lngLat) => () => {
+      street.close();
+      openKey(key, lngLat);
+    };
+    for (const r of registry.state.buildings.values()) {
+      if (!r.sign?.text || !near(r.lng, r.lat) || r.key === current?.key) continue;
+      posters.push({ lng: r.lng, lat: r.lat, title: r.sign.text, line: `${shortAddr(r.owner)} · Solworld`, color: SIGN_COLORS[r.sign.color] || SIGN_COLORS[0], onClick: open(r.key, [r.lng, r.lat]) });
+    }
+    if (current) {
+      const rec = registry.state.buildings.get(current.key);
+      const [lng, lat] = current.building.center;
+      const price = ctx.priceFor(current.building).lamports;
+      const poster = rec?.sign?.text
+        ? { title: rec.sign.text, line: `Owned by ${rec.owner === me() ? 'you' : shortAddr(rec.owner)}`, color: SIGN_COLORS[rec.sign.color] || SIGN_COLORS[0] }
+        : rec
+          ? { title: rec.owner === me() ? 'Yours' : 'Owned', line: rec.owner === me() ? 'Put up your billboard' : `by ${shortAddr(rec.owner)} · make an offer`, color: rec.owner === me() ? '#2af5a8' : '#8f6bff' }
+          : { title: 'For sale', line: `${fmtSol(price)} SOL · Solworld`, color: '#2af5a8' };
+      posters.push({ lng, lat, big: true, ...poster, onClick: () => street.close() });
+    }
+    return posters;
+  }
+
+  async function dropIn(target) {
+    if (!street.available) return;
+    target ||= current?.building.center || mapc.center;
+    const label = current && distanceM(current.building.center, target) < 60 ? buildingTitle(current.building.tags) || 'This building' : 'Street level';
+    const loadingToast = toast({ title: 'Dropping in…', tone: 'pending' });
+    try {
+      // From the 3D view, swoop down to the street first.
+      if (r3d.active) await r3d.swoopTo(target).catch(() => {});
+      await street.drop({ target, label, posters: streetPosters(target) });
+      loadingToast.dismiss();
+    } catch (err) {
+      console.warn('[solworld] street view unavailable', err);
+      loadingToast.update({
+        tone: 'error',
+        title: /No street imagery/.test(err?.message) ? 'No street photos here yet' : 'Street view didn’t open',
+        body: /No street imagery/.test(err?.message) ? 'Google hasn’t photographed this spot. Try a nearby street.' : `${err?.message || err}. In Google Cloud, enable “Maps JavaScript API” for your key.`,
+        duration: 12000,
+      });
+    }
   }
 
   /* ------------------------------------------------------ street life */
@@ -1214,6 +1276,7 @@ async function boot() {
     if (current && r3d.active) r3d.setSelection({ polygons: current.building.polygons, height: Math.max(current.tileTop || 0, buildingHeights(current.building.tags).top), tone: toneFor(current.key) });
     if (!settings.realistic3d.googleKey && registry.state.key3d) {
       r3d.setKey(registry.state.key3d);
+      street.setKey(registry.state.key3d);
       paint3DButton();
     }
     rail.render();
@@ -1337,7 +1400,7 @@ async function boot() {
   setInterval(() => wallet.exists && document.visibilityState === 'visible' && wallet.refreshBalance(), live ? 30_000 : 60_000);
 
   // Handy for debugging from the console.
-  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx, r3d, traffic };
+  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx, r3d, traffic, street };
 }
 
 /* -------------------------------------------------------------- demo */

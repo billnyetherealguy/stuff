@@ -621,6 +621,20 @@ async function real3d(env) {
       await page.waitForFunction(() => document.querySelector('#panel.is-open') && document.querySelector('#panel').dataset.tone !== 'resolving', null, { timeout: 30_000 });
     });
 
+    await step('real3d: drop into the street, with the building’s poster', async () => {
+      await page.locator('.media-chip--street').click();
+      await page.waitForSelector('#street.is-open', { timeout: 30_000 });
+      await page.waitForSelector('.fake-marker', { timeout: 10_000 });
+      const titles = await page.locator('.fake-marker').evaluateAll((els) => els.map((e) => e.title));
+      assert.ok(titles.some((t) => /For sale|Owned|Yours/.test(t)) || titles.length > 0, `posters: ${titles}`);
+      const pov = await page.evaluate(() => window.__fakePano.pov);
+      assert.ok(Number.isFinite(pov.heading), 'faces the building');
+      await page.waitForTimeout(800);
+      await shot(page, '44-street-drop');
+      await page.getByRole('button', { name: 'Back to Solworld' }).click();
+      await page.waitForFunction(() => !document.querySelector('#street.is-open'));
+    });
+
     await step('real3d: zooming far out returns to the map', async () => {
       await page.evaluate(() => {
         const C = window.Cesium;

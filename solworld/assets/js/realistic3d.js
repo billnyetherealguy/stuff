@@ -384,10 +384,12 @@ export class Realistic3D extends Emitter {
     const target = Cesium.Cartesian3.fromDegrees(center[0], center[1], ground + height / 2);
     const range = Math.max(120, height * 2.6);
     this.stopOrbit();
+    const flight = (this.flight = {});
     this.viewer.camera.flyToBoundingSphere(new Cesium.BoundingSphere(target, Math.max(20, height / 2)), {
       offset: new Cesium.HeadingPitchRange(this.viewer.camera.heading, Cesium.Math.toRadians(-28), range),
       duration: 2.2,
-      complete: () => this.startOrbit(target),
+      // Only start circling if nobody took over the camera during the flight.
+      complete: () => this.flight === flight && this.startOrbit(target),
     });
   }
 
@@ -397,8 +399,13 @@ export class Realistic3D extends Emitter {
     this.orbit = { axis: Cesium.Cartesian3.normalize(target, new Cesium.Cartesian3()), last: 0 };
   }
 
+  /** Stops circling (and any fly-in in progress): the user has taken the camera. */
   stopOrbit() {
     this.orbit = null;
+    if (this.flight) {
+      this.flight = null;
+      this.viewer?.camera.cancelFlight();
+    }
   }
 
   /** Tints the real building mesh (classification) — the selected one brighter. */

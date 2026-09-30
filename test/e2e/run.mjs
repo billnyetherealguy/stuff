@@ -160,7 +160,7 @@ async function demo(env) {
       assert.ok(hovered, 'hover state set');
     });
 
-    await step('demo: famous landmark is owned, priced at the 3 SOL cap', async () => {
+    await step('demo: famous landmark is owned', async () => {
       await clickBuildingAt(page, EMPIRE);
       await page.waitForFunction(() => document.querySelector('.panel-title')?.textContent === 'Empire State Building', null, { timeout: 10_000 });
       await page.waitForTimeout(2600);
@@ -238,9 +238,18 @@ async function demo(env) {
 
     await step('demo: offer on an owned landmark; the owner accepts', async () => {
       await closePanel(page);
-      await clickBuildingAt(page, EMPIRE);
+      // The cheapest landmark someone else owns in New York (the demo owner accepts 10%+ over their price).
+      const target = await page.evaluate(() => {
+        const me = window.solworld.wallet.address;
+        const nyc = [...window.solworld.registry.state.buildings.values()].filter((b) => b.owner !== me && b.lng > -74.03 && b.lng < -73.94 && b.lat > 40.7 && b.lat < 40.8);
+        return nyc.sort((a, b) => a.price - b.price)[0];
+      });
+      const offer = Math.ceil((target.price * 1.25) / 1e7) / 100; // SOL, 2 decimals
+      // Enough demo SOL for it (what the wallet's "+5 demo SOL" button does).
+      await page.evaluate((need) => window.solworld.wallet.adjustDemoBalance(Math.max(0, need - (window.solworld.wallet.balance || 0))), Math.round(offer * 1e9) + 2e9);
+      await clickBuildingAt(page, [target.lng, target.lat]);
       await page.waitForTimeout(600);
-      await page.locator('.offer-form .field-input').fill('3.4');
+      await page.locator('.offer-form .field-input').fill(String(offer));
       await page.getByRole('button', { name: 'Make offer' }).click();
       await page.waitForSelector('.toast >> text=Offer sent', { timeout: 10_000 });
       await stopMotion(page);
@@ -251,7 +260,7 @@ async function demo(env) {
         return s.buildings.get(location.hash.split('/').pop());
       });
       assert.equal(rec.acquired, 'sale');
-      assert.equal(rec.price, 3_400_000_000);
+      assert.equal(rec.price, Math.round(offer * 1e9));
     });
 
     await step('demo: an incoming offer can be accepted from the panel', async () => {
@@ -469,21 +478,21 @@ async function live(env) {
       await createWallet(page);
       alice = await page.evaluate(() => window.solworld.wallet.address);
       assert.equal(await page.locator('.deposit-addr').innerText(), alice);
-      chain.airdrop(alice, 10 * SOL);
-      await page.waitForSelector('.deposit-bal >> text=10', { timeout: 12_000 });
+      chain.airdrop(alice, 40 * SOL);
+      await page.waitForSelector('.deposit-bal >> text=40', { timeout: 12_000 });
       await shot(page, '21-live-deposit');
       await done(page);
     });
 
-    await step('live: buying the Empire State pays the treasury 3 SOL, no pop-ups', async () => {
+    await step('live: buying the Empire State (a world icon: 25 SOL) pays the treasury, no pop-ups', async () => {
       const before = chain.balance(treasuryAddr);
       await clickBuildingAt(page, EMPIRE);
-      await page.getByRole('button', { name: /^Buy for 3.00 SOL/ }).click();
+      await page.getByRole('button', { name: /^Buy for 25.00 SOL/ }).click();
       await page.getByRole('button', { name: 'I understand' }).click();
       await waitTone(page, 'mine', 30_000);
-      assert.equal(chain.balance(treasuryAddr) - before, 3 * SOL);
+      assert.equal(chain.balance(treasuryAddr) - before, 25 * SOL);
       const tx = chain.sent.at(-1);
-      assert.match(tx.memo, /^solworld:buy:w\d+@40\.74\d+,-73\.98\d+;p=3000000000$/);
+      assert.match(tx.memo, /^solworld:buy:w\d+@40\.74\d+,-73\.98\d+;p=25000000000$/);
       assert.ok(tx.keys.includes(await page.evaluate(() => window.solworld.registry.address)));
     });
 
@@ -551,7 +560,7 @@ async function live(env) {
       await page.getByRole('button', { name: 'Verify with my wallet' }).click();
       await page.getByRole('button', { name: /Harness Wallet/ }).click();
       await page.waitForSelector('.toast >> text=$MEME linked', { timeout: 30_000 });
-      await clickBuildingAt(page, [-73.975311, 40.751652]); // Chrysler: famous, 3 SOL > 2 SOL credit
+      await clickBuildingAt(page, [-73.975311, 40.751652]); // Chrysler: a world icon, 25 SOL > 2 SOL credit
       assert.equal(await page.getByRole('button', { name: /Use \$MEME credit/ }).count(), 0);
       await openAvailable(page, [[0.0022, 0.0006], [-0.0016, -0.0012], [0.0019, -0.0004]]);
       const before = chain.balance(treasuryAddr);

@@ -93,16 +93,20 @@ export function createTiles3d(world) {
     }
     for (let i = 1; i < pts.length - 1; i++) roofIdx.push(rb, rb + i, rb + i + 1);
   }
+  // The ground (streets and sidewalks), like the real photogrammetry has.
+  const S = 2000;
+  const ground = { pos: [-S, 0, S, S, 0, S, S, 0, -S, -S, 0, -S], uv: [0, 0, 45, 0, 45, 45, 0, 45], idx: [0, 1, 2, 0, 2, 3], image: ROOF };
   const glb = buildGlb([
     { pos, uv, idx, image: FACADE },
     { pos: roofPos, uv: roofUv, idx: roofIdx, image: ROOF },
+    ground,
   ]);
   const root = {
     asset: { version: '1.1' },
     geometricError: 800,
     root: {
       transform: enuMatrix(lng0, lat0),
-      boundingVolume: { sphere: [0, 0, 150, 700] },
+      boundingVolume: { sphere: [0, 0, 150, 2100] },
       geometricError: 0,
       refine: 'ADD',
       content: { uri: 'harness/city.glb' },

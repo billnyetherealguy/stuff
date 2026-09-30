@@ -8,7 +8,7 @@
  *    NEVER put a private key or seed phrase here: this file is public.
  *    Leave it empty ("") to run in DEMO MODE (nothing real moves).
  *
- *  • Building prices are automatic (0.001–3 SOL depending on how famous the
+ *  • Building prices are automatic (0.001–25 SOL depending on how famous the
  *    building is and how busy the area is). Nothing to set.
  *
  *  • When your meme coin launches, fill in `memecoin` below and redeploy.

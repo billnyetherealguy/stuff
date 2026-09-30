@@ -22,12 +22,28 @@ export const COLORS = {
   mine: '#2af5a8',
   owned: '#8f6bff',
   available: '#f3f5fa',
-  hover: '#2c323e',
+  hover: '#8fa3d1',
 };
 
 const BUILDING_MIN_ZOOM = 14;
 const SHELL_MIN_ZOOM = 14.6;
 const EMPTY = { type: 'FeatureCollection', features: [] };
+
+/** Rough distance (in degrees, lat-scaled) from a point to a ring; 0 inside. */
+function distanceToRing([x, y], ring) {
+  if (pointInPolygon([x, y], [ring])) return 0;
+  const k = Math.cos((y * Math.PI) / 180);
+  let best = Infinity;
+  for (let i = 1; i < ring.length; i++) {
+    const [ax, ay] = ring[i - 1];
+    const [bx, by] = ring[i];
+    const dx = (bx - ax) * k;
+    const dy = by - ay;
+    const t = Math.max(0, Math.min(1, (((x - ax) * k) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+    best = Math.min(best, Math.hypot((x - ax) * k - dx * t, y - ay - dy * t));
+  }
+  return best;
+}
 
 const keyFromTileId = (id) => {
   if (typeof id !== 'number' || !Number.isFinite(id)) return null;
@@ -139,7 +155,7 @@ export class MapController extends Emitter {
         },
         labelsFrom,
       );
-    shell('sw-shell-hover', ['==', ['get', 'kind'], 'hover'], 0.75);
+    shell('sw-shell-hover', ['==', ['get', 'kind'], 'hover'], 0.55);
     // Up close the tint turns translucent so the owned building's facade shows through.
     shell('sw-shell-owned', ['match', ['get', 'kind'], ['mine', 'owned'], true, false], ['interpolate', ['linear'], ['zoom'], 15.8, 0.9, 16.6, 0.5]);
     shell('sw-shell-selected', ['all', ['==', ['get', 'kind'], 'selected'], ['!', ['get', 'skin']]], 0.97);
@@ -161,6 +177,18 @@ export class MapController extends Emitter {
       },
       labelsFrom,
     );
+    // A quick bright flash on the building you just pressed.
+    m.addSource('sw-press', { type: 'geojson', data: EMPTY });
+    m.addLayer(
+      {
+        id: 'sw-shell-press',
+        type: 'fill-extrusion',
+        source: 'sw-press',
+        minzoom: BUILDING_MIN_ZOOM,
+        paint: { 'fill-extrusion-color': '#ffffff', 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-opacity': 0 },
+      },
+      labelsFrom,
+    );
     m.on('zoomend', () => {
       if (this.skin && Math.floor(m.getZoom()) !== this.skin.zoom) this._applySkin();
     });
@@ -174,7 +202,7 @@ export class MapController extends Emitter {
           'line-color': ['get', 'color'],
           'line-width': ['interpolate', ['linear'], ['zoom'], 14, 6, 18, 18],
           'line-blur': ['interpolate', ['linear'], ['zoom'], 14, 5, 18, 14],
-          'line-opacity': 0.55,
+          'line-opacity': ['case', ['get', 'hover'], 0.3, 0.7],
         },
       },
       'building-3d',
@@ -184,7 +212,7 @@ export class MapController extends Emitter {
         id: 'sw-ground-line',
         type: 'line',
         source: 'sw-ground',
-        paint: { 'line-color': ['get', 'color'], 'line-width': 1.4, 'line-opacity': 0.9 },
+        paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['get', 'hover'], 1.2, ['interpolate', ['linear'], ['zoom'], 14, 2, 18, 3.2]], 'line-opacity': ['case', ['get', 'hover'], 0.6, 1] },
       },
       'building-3d',
     );
@@ -493,17 +521,37 @@ export class MapController extends Emitter {
   }
 
   /** The single building footprint under a screen point, or null. */
-  pickAt(point, lngLat) {
+  pickAt(point, lngLat, { reach = 0 } = {}) {
     if (!this.ready || this.map.getZoom() < BUILDING_MIN_ZOOM) return null;
+    const ground = [lngLat.lng, lngLat.lat];
     let feature = this.map.queryRenderedFeatures(point, { layers: ['building-facade', 'building-3d'] })[0];
     if (!feature) feature = this.map.queryRenderedFeatures(point, { layers: ['building-pick'] })[0];
+    let near = false;
+    if (!feature && reach) {
+      // Just missed (a street, a gap, a fat finger): take the closest building nearby.
+      const box = [
+        [point.x - reach, point.y - reach],
+        [point.x + reach, point.y + reach],
+      ];
+      let best = Infinity;
+      for (const f of this.map.queryRenderedFeatures(box, { layers: ['building-facade', 'building-3d', 'building-pick'] })) {
+        for (const p of polygonsOf(f.geometry)) {
+          const d = distanceToRing(ground, p[0]);
+          if (d < best) {
+            best = d;
+            feature = f;
+          }
+        }
+      }
+      near = !!feature;
+    }
     if (!feature) return null;
     const parts = polygonsOf(feature.geometry);
     if (!parts.length) return null;
     const top = Number(feature.properties?.render_height ?? 5);
     const base = Number(feature.properties?.render_min_height ?? 0);
-    const ground = [lngLat.lng, lngLat.lat];
-    const part = pickPartOnRay(parts, ground, this.cameraInfo(), top, base);
+    let part = near ? null : pickPartOnRay(parts, ground, this.cameraInfo(), top, base);
+    if (!part) part = parts.reduce((a, b) => (distanceToRing(ground, a[0]) <= distanceToRing(ground, b[0]) ? a : b));
     if (!part) return null;
     return {
       part,
@@ -515,7 +563,7 @@ export class MapController extends Emitter {
   }
 
   _hoverAt(point, lngLat) {
-    const pick = this.pickAt(point, lngLat);
+    const pick = this.pickAt(point, lngLat, { reach: 8 });
     this.map.getCanvas().style.cursor = pick || this._pointAt(point) ? 'pointer' : '';
     const id = pick ? ringKey(pick.part) : null;
     if (id === this.hover?.id) return;
@@ -525,6 +573,7 @@ export class MapController extends Emitter {
   _setHover(hover) {
     this.hover = hover;
     this._renderShells();
+    this._renderGround();
   }
 
   _pointAt(point) {
@@ -542,8 +591,11 @@ export class MapController extends Emitter {
       this.emit('point', dot.properties.key);
       return;
     }
-    const pick = this.pickAt(e.point, e.lngLat);
-    if (pick) this.emit('pick', pick);
+    const pick = this.pickAt(e.point, e.lngLat, { reach: this.touchLike ? 26 : 14 });
+    if (pick) {
+      this.flashPress(pick);
+      this.emit('pick', pick);
+    }
     else this.emit('pick-empty', { zoom: this.map.getZoom(), lngLat: [e.lngLat.lng, e.lngLat.lat] });
   }
 
@@ -787,14 +839,28 @@ export class MapController extends Emitter {
     const sel = this.selection;
     const color = sel ? (sel.tone === 'mine' ? COLORS.mine : sel.tone === 'owned' ? COLORS.owned : '#dfe6ff') : null;
     const polys = sel?.polygons?.length ? sel.polygons : sel?.fallback ? [sel.fallback.part] : [];
-    this.map.getSource('sw-ground').setData({
-      type: 'FeatureCollection',
-      features: polys.map((p) => ({
-        type: 'Feature',
-        geometry: { type: 'Polygon', coordinates: p },
-        properties: { color },
-      })),
-    });
+    const features = polys.map((p) => ({ type: 'Feature', geometry: { type: 'Polygon', coordinates: p }, properties: { color, hover: false } }));
+    // A soft outline around the building under the pointer, too.
+    const hv = this.hover;
+    if (hv && !(sel && polys.some((p) => pointInPolygon(hv.point, p)))) features.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: hv.part }, properties: { color: '#b9c8ff', hover: true } });
+    this.map.getSource('sw-ground').setData({ type: 'FeatureCollection', features });
+  }
+
+  /** The press: the building flashes white for a moment, with a small ring on the ground. */
+  flashPress(pick) {
+    if (!this.ready || !pick) return;
+    const src = this.map.getSource('sw-press');
+    src.setData({ type: 'FeatureCollection', features: [this._shellFeature({ ...pick, kind: 'press' })] });
+    this.pulse(pick.point, '#ffffff', { duration: 700, reach: 36 });
+    if (this.reducedMotion) return;
+    const start = performance.now();
+    const frame = (now) => {
+      const t = Math.min(1, (now - start) / 420);
+      this.map.setPaintProperty('sw-shell-press', 'fill-extrusion-opacity', 0.85 * (1 - t) ** 2);
+      if (t < 1) requestAnimationFrame(frame);
+      else src.setData(EMPTY);
+    };
+    requestAnimationFrame(frame);
   }
 
   /**
@@ -971,12 +1037,11 @@ export class MapController extends Emitter {
   }
 
   /** Expanding rings at a point, e.g. when a purchase lands. */
-  pulse(center, color = COLORS.mine) {
+  pulse(center, color = COLORS.mine, { duration = 2200, reach = 90 } = {}) {
     if (!this.ready || this.reducedMotion) return;
     const src = this.map.getSource('sw-pulse');
     src.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Point', coordinates: center }, properties: { color } }] });
     const start = performance.now();
-    const duration = 2200;
     const frame = (now) => {
       const t = (now - start) / duration;
       if (t >= 1) {
@@ -985,7 +1050,7 @@ export class MapController extends Emitter {
         return;
       }
       const e = 1 - Math.pow(1 - t, 3);
-      this.map.setPaintProperty('sw-pulse', 'circle-radius', 6 + e * 90);
+      this.map.setPaintProperty('sw-pulse', 'circle-radius', 6 + e * reach);
       this.map.setPaintProperty('sw-pulse', 'circle-stroke-opacity', 0.9 * (1 - t));
       this.map.setPaintProperty('sw-pulse', 'circle-stroke-width', 3 * (1 - t) + 0.5);
       requestAnimationFrame(frame);

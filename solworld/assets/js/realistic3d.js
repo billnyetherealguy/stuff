@@ -288,20 +288,142 @@ export class Realistic3D extends Emitter {
     return [Cesium.Math.toDegrees(c.longitude), Cesium.Math.toDegrees(c.latitude), c.height];
   }
 
-  /** Ground height (ellipsoid meters) under a point, sampled from the 3D tiles. */
+  /** Our own things drawn in the scene, which ground sampling must look through. */
+  _ours() {
+    const out = [];
+    for (const e of this.agentModels?.values() || []) if (e.model) out.push(e.model);
+    for (const p of [this.labels, this.lights, this.selectionPrim, this.ownedPrim]) if (p) out.push(p);
+    return out;
+  }
+
+  /**
+   * Ground height (ellipsoid meters) under a point, sampled from the real 3D
+   * city: the lowest of a few points around it, so a tree or parked car baked
+   * into the photogrammetry doesn't count as the ground.
+   */
   async groundAt([lng, lat]) {
     const id = `${lng.toFixed(4)},${lat.toFixed(4)}`;
     if (this.ground.has(id)) return this.ground.get(id);
     const Cesium = this.Cesium;
     let h = null;
     try {
-      const [s] = await this.viewer.scene.sampleHeightMostDetailed([Cesium.Cartographic.fromDegrees(lng, lat)], [this.tileset].filter(Boolean));
-      if (Number.isFinite(s?.height)) h = s.height;
+      const d = 2.5 / 111_320;
+      const pts = [[0, 0], [d, 0], [-d, 0], [0, d], [0, -d]].map(([x, y]) => Cesium.Cartographic.fromDegrees(lng + x / Math.cos((lat * Math.PI) / 180), lat + y));
+      const got = await this.viewer.scene.sampleHeightMostDetailed(pts, this._ours());
+      const hs = got.map((s) => s?.height).filter(Number.isFinite);
+      if (hs.length) h = Math.min(...hs);
     } catch {
       // not loaded yet
     }
     if (h != null) this.ground.set(id, h);
     return h ?? this.lastGround ?? 0;
+  }
+
+  /**
+   * Whether Google has real 3D buildings here or just flat photos draped on
+   * the terrain: samples the surface on top of known buildings and on the
+   * streets around them. `buildings`: [{ center: [lng, lat], height, radius }].
+   * Returns the share (0–1) of buildings that stand up in the 3D tiles, or
+   * null if it couldn't tell yet.
+   */
+  async coverage(buildings) {
+    if (!this.viewer || !this.tileset || !buildings.length) return null;
+    const Cesium = this.Cesium;
+    const pts = [];
+    for (const { center: [lng, lat], radius } of buildings) {
+      const k = 1 / (111_320 * Math.cos((lat * Math.PI) / 180));
+      const out = (radius || 10) + 12; // out on the street
+      pts.push(Cesium.Cartographic.fromDegrees(lng, lat));
+      for (const [x, y] of [[out, 0], [-out, 0], [0, out], [0, -out]]) pts.push(Cesium.Cartographic.fromDegrees(lng + x * k, lat + y / 110_574));
+    }
+    let got;
+    try {
+      got = await this.viewer.scene.sampleHeightMostDetailed(pts, this._ours());
+    } catch {
+      return null;
+    }
+    let tested = 0;
+    let standing = 0;
+    buildings.forEach((b, i) => {
+      const [top, ...around] = got.slice(i * 5, i * 5 + 5).map((s) => s?.height);
+      const street = around.filter(Number.isFinite);
+      if (!Number.isFinite(top) || !street.length) return;
+      tested++;
+      if (top - Math.min(...street) > Math.max(2.5, b.height * 0.4)) standing++;
+    });
+    return tested >= 4 ? standing / tested : null;
+  }
+
+  /**
+   * Street height for street-life agents, on a ~50 m grid blended between
+   * cells. Each cell is measured where an agent actually is (on a street or
+   * sidewalk, never inside a building), taking the lower of two nearby points
+   * so a tree or parked car baked into the 3D city doesn't count as ground.
+   * While a cell is pending, a measured cell close by stands in; with none
+   * near, returns null and the agent stays hidden (never floating).
+   */
+  _streetHeight(lng, lat) {
+    const G = 2000; // cells per degree (~42–55 m)
+    this.patches ||= new Map();
+    this.patchQueue ||= new Map();
+    if (this.patches.size > 20_000) this.patches.clear();
+    const fx = lng * G - 0.5;
+    const fy = lat * G - 0.5;
+    const x0 = Math.floor(fx);
+    const y0 = Math.floor(fy);
+    const own = `${Math.round(lng * G - 0.5)},${Math.round(lat * G - 0.5)}`;
+    // (setAgents rebuilds the queue every frame, nearest to the camera first.)
+    if (!this.patches.has(own) && !this.patchQueue.has(own)) this.patchQueue.set(own, [lng, lat]);
+    this._samplePatches();
+    const hs = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([dx, dy]) => this.patches.get(`${x0 + dx},${y0 + dy}`));
+    if (hs.every(Number.isFinite)) {
+      const tx = fx - x0;
+      const ty = fy - y0;
+      return (hs[0] * (1 - tx) + hs[1] * tx) * (1 - ty) + (hs[2] * (1 - tx) + hs[3] * tx) * ty;
+    }
+    // Nearest measured cell within ~2 cells.
+    let best = null;
+    let bestD = Infinity;
+    for (let dx = -2; dx <= 3; dx++) {
+      for (let dy = -2; dy <= 3; dy++) {
+        const h = this.patches.get(`${x0 + dx},${y0 + dy}`);
+        if (!Number.isFinite(h)) continue;
+        const d = (fx - (x0 + dx)) ** 2 + (fy - (y0 + dy)) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = h;
+        }
+      }
+    }
+    return best;
+  }
+
+  _samplePatches() {
+    if (this.sampleTimer || !this.patchQueue?.size || !this.tileset) return;
+    this.sampleTimer = setTimeout(() => {
+      this.sampleTimer = null;
+      const Cesium = this.Cesium;
+      const scene = this.viewer?.scene;
+      if (!scene || !this.active) return;
+      // Two cells per tick, from the tiles already on screen: cheap enough not to stall a frame.
+      const batch = [...this.patchQueue.entries()].slice(0, 2);
+      const ours = this._ours();
+      const d = 1.6 / 110_574;
+      for (const [key, [lng, lat]] of batch) {
+        this.patchQueue.delete(key);
+        const hs = [[lng, lat], [lng, lat + d]].map(([x, y]) => scene.sampleHeight(Cesium.Cartographic.fromDegrees(x, y), ours)).filter(Number.isFinite);
+        if (!hs.length) continue; // not on screen / loaded yet: asked again later
+        const h = Math.min(...hs);
+        // A rooftop or awning isn't the street: compare with the cells around it.
+        const [cx, cy] = key.split(',').map(Number);
+        const around = [];
+        for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) if (dx || dy) around.push(this.patches.get(`${cx + dx},${cy + dy}`));
+        const known = around.filter(Number.isFinite).sort((x, y) => x - y);
+        if (known.length >= 2 && h > known[Math.floor(known.length / 2)] + 6) continue;
+        this.patches.set(key, h);
+      }
+      this._samplePatches();
+    }, 90);
   }
 
   /** Matches the flat map's camera (center/zoom/pitch/bearing) in 3D. */
@@ -432,7 +554,7 @@ export class Realistic3D extends Emitter {
     this.selectionPrim = null;
     if (!polygons?.length) return;
     const color = tone === 'mine' ? '#2af5a8' : tone === 'owned' ? '#8f6bff' : '#ffffff';
-    this.selectionPrim = this.viewer.scene.primitives.add(this._classify(polygons, ground, height, Cesium.Color.fromCssColorString(color).withAlpha(0.32)));
+    this.selectionPrim = this.viewer.scene.primitives.add(this._classify(polygons, ground, height, Cesium.Color.fromCssColorString(color).withAlpha(0.45)));
   }
 
   /** Owned buildings nearby, tinted in their owner color. */
@@ -475,8 +597,9 @@ export class Realistic3D extends Emitter {
 
   /**
    * Moves the simulated cars and people (traffic.js) through the real 3D city
-   * as real 3D models (assets/models: cars with lit head/taillights, people
-   * with a walk cycle). Only the ones nearest the camera are drawn.
+   * as real 3D models (assets/models: cars with lit head/taillights, people),
+   * each standing on the real street under it. Only the ones nearest the
+   * camera are drawn.
    */
   setAgents(agents) {
     if (!this.viewer || !this.active) return;
@@ -492,7 +615,8 @@ export class Realistic3D extends Emitter {
     const kx = 111_320 * Math.cos((camLat * Math.PI) / 180);
     const dist2 = (a) => ((a.lng - camLng) * kx) ** 2 + ((a.lat - camLat) * 110_574) ** 2;
     const nearest = (kind, n) => agents.filter((a) => a.kind === kind).sort((x, y) => dist2(x) - dist2(y)).slice(0, n);
-    const shown = [...nearest('car', 70), ...nearest('person', 90)];
+    const shown = [...nearest('car', 70), ...nearest('person', 90)].sort((x, y) => dist2(x) - dist2(y));
+    this.patchQueue?.clear(); // re-asked below, nearest first
     const keep = new Set();
     const base = this.modelBase || new URL('../models/', import.meta.url).href;
     for (const a of shown) {
@@ -514,9 +638,20 @@ export class Realistic3D extends Emitter {
           .catch(() => {});
       }
       if (entry.model) {
-        const pos = Cesium.Cartesian3.fromDegrees(a.lng, a.lat, ground + 0.05);
+        // Stand on the real street under this agent; hidden until we know where that is.
+        const h = this._streetHeight(a.lng, a.lat);
+        a.ground = h;
+        if (h == null || Math.abs(h - ground) > 60) {
+          entry.model.show = false;
+          continue;
+        }
+        // Walkers: a small bob and sway with each step (the models aren't rigged).
+        const step = a.kind === 'person' && !a.paused ? (a.stride / 0.72) * Math.PI : 0;
+        const bob = a.kind === 'person' ? Math.abs(Math.sin(step)) * 0.035 : 0;
+        const roll = a.kind === 'person' ? Math.sin(step) * 0.035 : 0;
+        const pos = Cesium.Cartesian3.fromDegrees(a.lng, a.lat, h + 0.03 + bob);
         // Our heading is clockwise from north; Cesium's is clockwise from east.
-        entry.model.modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(pos, new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(a.heading - 90), 0, 0));
+        entry.model.modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(pos, new Cesium.HeadingPitchRoll(Cesium.Math.toRadians(a.heading - 90), 0, roll));
         entry.model.show = true;
       }
     }
@@ -529,12 +664,12 @@ export class Realistic3D extends Emitter {
     if (night) {
       // A soft halo in front of headlights and behind taillights (the lamps themselves glow in the models).
       for (const a of shown) {
-        if (a.kind !== 'car') continue;
+        if (a.kind !== 'car' || a.ground == null) continue;
         const h = Cesium.Math.toRadians(a.heading);
         const k = 111_320 * Math.cos(Cesium.Math.toRadians(a.lat));
         for (const [d, color, size] of [[a.length / 2 + 0.6, '#fff4d6', 9], [-(a.length / 2 + 0.3), '#ff3b30', 5]]) {
           this.lights.add({
-            position: Cesium.Cartesian3.fromDegrees(a.lng + (Math.sin(h) * d) / k, a.lat + (Math.cos(h) * d) / 110_574, ground + 0.7),
+            position: Cesium.Cartesian3.fromDegrees(a.lng + (Math.sin(h) * d) / k, a.lat + (Math.cos(h) * d) / 110_574, a.ground + 0.7),
             color: Cesium.Color.fromCssColorString(color).withAlpha(0.85),
             pixelSize: size,
             scaleByDistance: new Cesium.NearFarScalar(20, 1.8, 800, 0.25),

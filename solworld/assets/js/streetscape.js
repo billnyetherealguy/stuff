@@ -7,7 +7,7 @@ const M_PER_DEG_LAT = 110_574;
 const mPerDegLng = (lat) => 111_320 * Math.cos((lat * Math.PI) / 180);
 
 // Half the paved width of each road class (m), and whether it has sidewalks.
-const ROADS = {
+export const ROADS = {
   motorway: { half: 11, walk: false },
   trunk: { half: 9, walk: false },
   primary: { half: 7.5, walk: true },
@@ -16,7 +16,7 @@ const ROADS = {
   minor: { half: 4.3, walk: true },
   service: { half: 2.8, walk: false },
 };
-const SIDEWALK = 2.8;
+export const SIDEWALK = 2.8;
 const CURB = 0.16;
 
 function rng(seed) {
@@ -162,7 +162,7 @@ function trim(pts, startCut, endCut) {
  * Clips a polyline to the square [-r, r]² (a long straight road can cross the
  * area with both of its vertices far outside it). Returns the pieces inside.
  */
-function clipLine(pts, r) {
+export function clipLine(pts, r) {
   const pieces = [];
   let cur = null;
   for (let i = 1; i < pts.length; i++) {

@@ -83,18 +83,18 @@ rpc: ["https://mainnet.helius-rpc.com/?api-key=YOUR_KEY"],
 
 ## How it works
 
-### Prices: 0.001 to 3 SOL
+### Prices: 0.001 to 25 SOL
 
 Prices are automatic and deterministic, computed from public OpenStreetMap data, so anyone can re-check them. A building starts at **0.001 SOL** and is multiplied by:
 
 | Factor | Effect |
 | --- | --- |
 | Busy area | Up to ~40× in the centre of big hubs (New York, London, Tokyo, Dubai…), fading with distance |
-| Fame | 25× for landmarks with a Wikipedia/Wikidata entry, 6× for attractions or historic sites, 2× for named buildings |
+| Fame | 250× for world icons (a Wikipedia/Wikidata landmark that's also an attraction, historic site, cathedral, palace, stadium or 200 m+ skyscraper), 20× for other Wikipedia/Wikidata landmarks, 6× for attractions or historic sites, 2× for named buildings |
 | Height | +1× for every 40 m |
 | Footprint | 0.6× to 6× by ground area |
 
-The result is capped at **3 SOL**. A shed in the countryside costs 0.001 SOL, while the Empire State Building, Burj Khalifa or Eiffel Tower costs 3 SOL. Each building's panel shows the factors that make up its price.
+The result is capped at **25 SOL**. A shed in the countryside costs 0.001 SOL, a plain Midtown building about 0.04 SOL, a famous Midtown office tower about 5 SOL, and the Empire State Building, Chrysler Building or Eiffel Tower 25 SOL. Each building's panel shows the factors that make up its price. Buildings bought before a price change keep what they paid.
 
 ### The Solworld wallet
 
@@ -165,7 +165,9 @@ It also shows totals: revenue, volume, buildings, owners and sales.
 - **Photos match the time of day:** after dark, a building shows a night photo when one exists (Wikidata "nighttime view" or Wikimedia Commons), with a soft bloom so the lit windows glow. The satellite close-up is graded to night with glowing windows. A chip shows whether it's day, golden hour or night there now.
 - **Real photos on the buildings:** when you open a building that has a real photo, the 3D building is wrapped in that photo. After dark, the lit windows glow: night photos get a soft bloom, and day photos are darkened with warm window lights added.
 - **3D streets:** zoomed in, the streets are built in 3D from the real road network: textured asphalt with lane markings, raised sidewalks with slabs, joints and cracks, and trees along the sidewalks and all through parks and woods.
-- **Street life:** simulated cars (sedans, SUVs, yellow cabs in big cities, vans, buses, all with working head- and taillights) drive the real roads and people walk the sidewalks and footpaths, both on the map and in realistic 3D. How many depends on how busy the place is in real life: packed in Midtown Manhattan or downtown DC, a handful in suburbs and towns, none in the countryside. Fewer people are out at night, and cars show headlights and taillights after dark.
+- **Street life:** 11 real car models (plus yellow cabs in big cities, vans and buses) with glowing headlights, taillights and indicators drive the real roads, and 36 pedestrians in everyday outfits walk the sidewalks and footpaths, both on the map and in realistic 3D. Cars keep to their lanes (multi-lane avenues, one-way streets, and keeping left where traffic does, like the UK, Japan or Australia), keep a safe distance, take turns through intersections and turn onto the streets that really connect. People stay on the sidewalk, step around each other and turn the corner. In realistic 3D everyone stands on the real street surface. How many depends on how busy the place is in real life: packed in Midtown Manhattan or downtown DC, a handful in suburbs and towns, none in the countryside. Fewer people are out at night.
+- **Picking a building:** a near miss still counts (the closest building to where you tapped, with extra room on phones); the building under the pointer gets a soft outline, and the one you press flashes and stays outlined.
+- **Where Google has no real 3D:** in some places Google's 3D layer is only flat photos, which would hide the buildings. Solworld checks for that and switches back to its own 3D buildings there.
 - **Every building loads:** building lookups ask several OpenStreetMap servers at once and take the first answer, and buildings around where you're looking load in the background. If the servers are down or slow, the building still opens straight from the map and stays buyable, identified by its footprint (`g…` keys). Searching a street address opens the house at that address.
 - **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org), identified by its OSM element (`w…`/`r…`). Clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test.
 - **What it looks like:** a satellite close-up with the footprint traced, a real photo from Wikidata/Wikimedia Commons when there is one, and a Google Street View link.
@@ -191,7 +193,7 @@ solworld/                 the website (deploy this folder)
   config.js               ← your settings
   assets/js/app.js        wires everything together; every user action
   assets/js/registry.js   on-chain registry: memo format + ownership/market rules
-  assets/js/pricing.js    0.001–3 SOL building prices
+  assets/js/pricing.js    0.001–25 SOL building prices
   assets/js/market.js     offers: durable-nonce atomic sales
   assets/js/burner.js     the per-visitor Solworld wallet
   assets/js/solana.js     base58, transactions, JSON-RPC (no dependencies)
@@ -204,7 +206,7 @@ solworld/                 the website (deploy this folder)
   assets/js/streetview.js drop into the street: in-site Google Street View with posters
   assets/js/streetscape.js  3D asphalt, sidewalks, markings, trees, street billboards
   assets/js/ui/takeover.js  city takeover: select land, see its tier and price, buy it
-  assets/models/          our own CC0 3D cars and walking people (test/tools/build-models.mjs)
+  assets/models/          3D cars and pedestrians (test/tools/import-car-pack.mjs, import-people-pack.mjs; see LICENSE.txt)
   assets/js/sun.js        real sun position (lighting, day/night)
   assets/js/ui/           panel, wallet, leaderboard, search, modals
   vendor/                 MapLibre GL JS 6.11.2, @noble/ed25519 3.2.0, uqr 0.1.3

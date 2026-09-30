@@ -295,6 +295,8 @@ async function boot() {
       if (current) r3d.focus({ center: current.building.center, height: Math.max(current.tileTop || 0, buildingHeights(current.building.tags).top), polygons: current.building.polygons, tone: toneFor(current.key) });
       refresh3DOverlays();
       refreshTraffic(true);
+      coverageAt = null;
+      checkCoverage().catch(() => {});
       if (!storage.get('solworld:tip-3d')) {
         storage.set('solworld:tip-3d', 1);
         toast({ title: 'Realistic 3D', body: 'Real 3D buildings from Google. Tap any building; zoom out to go back to the map.', iconName: 'cube', duration: 6500 });
@@ -318,6 +320,54 @@ async function boot() {
       paint3DButton();
     }
   }
+  /*
+   * Google only has true 3D buildings in some places; elsewhere its 3D layer
+   * is flat photos draped on the terrain, which would hide every building.
+   * After loading, check that known buildings actually stand up in it; if not,
+   * go back to Solworld's own 3D buildings here (and don't auto-switch nearby).
+   */
+  const flat3D = new Set();
+  const flatKey = ([lng, lat]) => `${Math.round(lng * 20)},${Math.round(lat * 20)}`; // ~5 km cells
+  let coverageAt = null;
+  async function checkCoverage() {
+    if (!r3d.active) return;
+    const center = mapc.center;
+    if (coverageAt && distanceM(coverageAt, center) < 400) return;
+    const kx = 111_320 * Math.cos((center[1] * Math.PI) / 180);
+    const seen = new Set();
+    const buildings = [];
+    for (const f of mapc.map.querySourceFeatures('omt', { sourceLayer: 'building' })) {
+      const height = Number(f.properties?.render_height) || 0;
+      if (height < 8 || f.geometry?.type !== 'Polygon') continue;
+      const ring = f.geometry.coordinates[0];
+      const lng = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+      const lat = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+      const id = `${lng.toFixed(5)},${lat.toFixed(5)}`;
+      if (seen.has(id) || Math.hypot((lng - center[0]) * kx, (lat - center[1]) * 110_574) > 350) continue;
+      seen.add(id);
+      const xs = ring.map((p) => p[0]);
+      const radius = ((Math.max(...xs) - Math.min(...xs)) * kx) / 2;
+      buildings.push({ center: [lng, lat], height, radius });
+    }
+    if (buildings.length < 4) return; // nothing tall to test here
+    buildings.sort((a, b) => b.height - a.height);
+    // Let the detailed tiles stream in first.
+    await new Promise((r) => setTimeout(r, 2500));
+    const share = await r3d.coverage(buildings.slice(0, 12));
+    if (share == null || !r3d.active) return;
+    coverageAt = center;
+    if (share >= 0.3) return;
+    flat3D.add(flatKey(center));
+    const cam = r3d.cameraState();
+    r3d.exit();
+    document.body.classList.remove('is-3d');
+    r3dArmed = false;
+    if (cam) mapc.map.jumpTo({ center: cam.center, zoom: Math.min(cam.zoom, 17), pitch: cam.pitch, bearing: cam.bearing });
+    paint3DButton();
+    refreshTraffic(true);
+    toast({ title: 'No realistic 3D here yet', body: 'Google hasn’t mapped this area in 3D, so you’re seeing Solworld’s own 3D buildings.', iconName: 'cube', duration: 7000 });
+  }
+
   function leave3D(cam = r3d.active ? r3d.cameraState() : null) {
     r3d.exit();
     document.body.classList.remove('is-3d');
@@ -331,7 +381,7 @@ async function boot() {
     const z = mapc.zoom;
     if (z < 16) r3dArmed = true;
     paint3DButton();
-    if (!r3d.active && r3dArmed && z >= 16.6 && r3d.available && !hero.visible && storage.get(R3D_PREF) !== 'off') enter3D();
+    if (!r3d.active && r3dArmed && z >= 16.6 && r3d.available && !hero.visible && storage.get(R3D_PREF) !== 'off' && !flat3D.has(flatKey(mapc.center))) enter3D();
   });
   r3d.on('moveend', (cam) => {
     if (!cam) return;
@@ -351,6 +401,7 @@ async function boot() {
     mapc.settled().then(() => {
       refresh3DOverlays();
       refreshTraffic();
+      checkCoverage().catch(() => {});
     });
   });
   r3d.on('pick', async ({ lngLat }) => {
@@ -510,8 +561,8 @@ async function boot() {
   let lastFrame = 0;
   function animateTraffic(t) {
     requestAnimationFrame(animateTraffic);
-    // ~20 fps on the map, ~12 fps in the heavier realistic 3D view.
-    if (document.hidden || t - lastFrame < (reduced ? 200 : r3d.active ? 80 : 50)) return;
+    // ~30 fps (movement is smoothed between steps, so it still glides).
+    if (document.hidden || t - lastFrame < (reduced ? 200 : 32)) return;
     const dt = Math.min(0.25, (t - (lastFrame || t)) / 1000);
     lastFrame = t;
     if (!traffic.agents.length) return;

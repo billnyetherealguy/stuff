@@ -6,7 +6,25 @@ import { busyness } from './cities.js';
 import { buildingHeights } from './osm.js';
 
 export const MIN_LAMPORTS = 1_000_000; // 0.001 SOL
-export const MAX_LAMPORTS = 3_000_000_000; // 3 SOL
+export const MAX_LAMPORTS = 25_000_000_000; // 25 SOL: world icons
+
+/**
+ * How famous a building is, from its OpenStreetMap tags:
+ * world icons (a Wikipedia/Wikidata landmark that's also an attraction, a
+ * historic site, or a skyscraper) > landmarks > attractions > named buildings.
+ */
+export function fameOf(tags = {}) {
+  const known = !!(tags.wikidata || tags.wikipedia);
+  const attraction = ['attraction', 'museum', 'viewpoint', 'gallery', 'theme_park', 'zoo'].includes(tags.tourism);
+  const historic = !!(tags.historic || tags.heritage);
+  const grand = ['cathedral', 'palace', 'castle', 'stadium', 'mosque', 'temple', 'basilica'].includes(tags.building);
+  const { top } = buildingHeights(tags);
+  if (known && (attraction || historic || grand || top >= 200)) return { x: 250, label: 'World icon' };
+  if (known) return { x: 20, label: 'Famous landmark' };
+  if (attraction || historic || tags.tourism) return { x: 6, label: 'Attraction' };
+  if (tags.name || tags['name:en']) return { x: 2, label: 'Named building' };
+  return { x: 1, label: '' };
+}
 
 function roundNice(lamports) {
   // Two significant digits: 0.1234 SOL -> 0.12 SOL, 0.00137 -> 0.0014
@@ -27,11 +45,8 @@ export function priceBuilding(building) {
   const place = busyness(lat, lng);
   if (place.factor > 1.2) factors.push({ label: place.city ? `Busy area · ${place.city}` : 'Busy area', x: place.factor });
 
-  let fame = 1;
-  if (tags.wikidata || tags.wikipedia) fame = 25;
-  else if (tags.tourism || tags.historic) fame = 6;
-  else if (tags.name || tags['name:en']) fame = 2;
-  if (fame > 1) factors.push({ label: fame >= 25 ? 'Famous landmark' : fame >= 6 ? 'Attraction' : 'Named building', x: fame });
+  const { x: fame, label } = fameOf(tags);
+  if (fame > 1) factors.push({ label, x: fame });
 
   const { top } = buildingHeights(tags);
   const height = 1 + top / 40;

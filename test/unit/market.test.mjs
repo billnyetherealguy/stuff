@@ -42,7 +42,7 @@ async function wallet(rpc, chain, sol) {
   return w;
 }
 
-test('prices stay between 0.001 and 3 SOL and favour famous, busy, tall buildings', () => {
+test('prices stay between 0.001 and 25 SOL and favour famous, busy, tall buildings', () => {
   const rural = priceBuilding({ tags: { building: 'shed' }, area: 40, center: [-100.5, 45.2] });
   const suburb = priceBuilding({ tags: { building: 'house' }, area: 140, center: [-73.75, 40.9] });
   const midtown = priceBuilding({ tags: { building: 'apartments', height: '30' }, area: 600, center: [-73.9855, 40.7484] });
@@ -51,6 +51,17 @@ test('prices stay between 0.001 and 3 SOL and favour famous, busy, tall building
   assert.equal(empire.lamports, MAX_LAMPORTS);
   assert.ok(suburb.lamports > rural.lamports && midtown.lamports > suburb.lamports && empire.lamports > midtown.lamports, JSON.stringify([rural, suburb, midtown, empire].map((p) => p.lamports)));
   assert.ok(midtown.factors.some((f) => /Busy area · New York/.test(f.label)));
+});
+
+test('world icons cost far more than ordinary landmarks, named or plain buildings', () => {
+  const at = [-73.982, 40.755];
+  const p = (tags) => priceBuilding({ tags, area: 2500, center: at }).lamports;
+  const icon = p({ name: 'Icon', wikidata: 'Q1', tourism: 'attraction', height: '150' });
+  const landmark = p({ name: 'Tower', wikidata: 'Q2', height: '150' });
+  const named = p({ name: 'Tower', height: '150' });
+  const plain = p({ height: '150' });
+  assert.ok(icon > landmark * 5 && landmark > named * 5 && named > plain, JSON.stringify({ icon, landmark, named, plain }));
+  assert.ok(icon <= MAX_LAMPORTS && MAX_LAMPORTS === 25_000_000_000);
 });
 
 test('Solworld wallet exports a Phantom-compatible key and restores from it', async () => {

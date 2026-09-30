@@ -11,7 +11,7 @@ Put your site link where it says `LINK`.
 
 > Every building on Earth is now for sale on Solana.
 >
-> Solworld: tap any building on the planet, see who owns it, make it yours. 0.001 SOL for a quiet corner, up to 3 SOL for a landmark.
+> Solworld: tap any building on the planet, see who owns it, make it yours. 0.001 SOL for a quiet corner, up to 25 SOL for a world icon.
 >
 > The world is empty. Who's first? 🌍
 > LINK

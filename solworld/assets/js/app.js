@@ -31,7 +31,7 @@ import { Geocoder, PhotoFinder, SolPrice, buildingKind, buildingTitle } from './
 import { MapController, COLORS } from './map.js';
 import { FEATURED, placeLabel } from './cities.js';
 import { distanceM, interiorPoint, pointInPolygon, polygonAreaM2 } from './geo.js';
-import { $, avatar, copyText, debounce, fmtInt, fmtSol, h, isTouch, prefersReducedMotion, shortAddr, storage } from './util.js';
+import { $, avatar, copyText, debounce, fmtInt, fmtSol, h, isTouch, prefersReducedMotion, setNameResolver, shortAddr, storage, who } from './util.js';
 import { Toasts } from './ui/feedback.js';
 import { BuildingPanel } from './ui/panel.js';
 import { Rail } from './ui/rail.js';
@@ -65,6 +65,7 @@ const VOID_REASONS = {
   'no-credit': 'Not enough holder credit left.',
   'not-owner': 'The seller no longer owned it.',
   'bad-sale': 'The sale didn’t match the offer.',
+  'name-taken': 'Someone already has that name. Try another.',
 };
 
 async function boot() {
@@ -93,6 +94,7 @@ async function boot() {
     : new DemoRegistry({ rules: { ...settings.rules, memecoin: DEMO_COIN }, storage, seeds: () => demoSeeds(osm) });
   const treasury = live ? settings.treasury : DEMO_TREASURY;
   // The active meme coin (config.js, or whatever the operator set on-chain).
+  setNameResolver((address) => registry.state.names?.get(address) || null);
   Object.defineProperty(settings, 'memecoinView', { get: () => registry.state.coin || null, configurable: true });
   const ext = new WalletManager({ cluster: settings.cluster, rpc, storage: null });
   const wallet = new BurnerWallet({ rpc, storage });
@@ -174,10 +176,18 @@ async function boot() {
     onAudit: (box, btn) => audit(box, btn),
     onSetCoin: (coin, btn) => setCoin(coin, btn),
     streetAvailable: () => street.available,
+    myName: () => (me() ? registry.state.names?.get(me()) || '' : ''),
+    nameTaken: (name) => {
+      const lower = String(name).toLowerCase();
+      for (const [addr, n] of registry.state.names || []) if (n.toLowerCase() === lower && addr !== me()) return true;
+      return false;
+    },
+    onSetName: (name) => setName(name),
     onStreet: (lngLat) => dropIn(lngLat),
     onSetKey3d: (apiKey, btn) => publishSetting(buildMemo('tiles', { apiKey }), 'Realistic 3D is on', btn),
     key3dActive: () => !!(settings.realistic3d.googleKey || registry.state.key3d || settings.realistic3d.ionToken),
     coinMarket: (mint) => coinMarket(mint),
+    testGoogleKey: (key) => testGoogleKey(key),
     onHolder: async () => {
       if (!wallet.exists && !(await walletUI.open())) return;
       walletUI.holder();
@@ -362,7 +372,7 @@ async function boot() {
   street.setKey(settings.realistic3d.googleKey);
   const walkButton = h('button', { class: 'ctrl-pill glass is-hidden', onclick: () => dropIn() }, h('span', { svg: icon('street', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Walk here'));
   $('#controls').append(walkButton);
-  const paintWalk = () => walkButton.classList.toggle('is-hidden', !(street.available && !hero.visible && (r3d.active || mapc.zoom >= 15.5)));
+  const paintWalk = () => walkButton.classList.toggle('is-hidden', !(!hero.visible && (r3d.active || mapc.zoom >= 15.5)));
   mapc.map.on('zoomend', paintWalk);
   r3d.on('enter', paintWalk);
   r3d.on('exit', paintWalk);
@@ -377,16 +387,16 @@ async function boot() {
     };
     for (const r of registry.state.buildings.values()) {
       if (!r.sign?.text || !near(r.lng, r.lat) || r.key === current?.key) continue;
-      posters.push({ lng: r.lng, lat: r.lat, title: r.sign.text, line: `${shortAddr(r.owner)} · Solworld`, color: SIGN_COLORS[r.sign.color] || SIGN_COLORS[0], onClick: open(r.key, [r.lng, r.lat]) });
+      posters.push({ lng: r.lng, lat: r.lat, title: r.sign.text, line: `${who(r.owner)} · Solworld`, color: SIGN_COLORS[r.sign.color] || SIGN_COLORS[0], onClick: open(r.key, [r.lng, r.lat]) });
     }
     if (current) {
       const rec = registry.state.buildings.get(current.key);
       const [lng, lat] = current.building.center;
       const price = ctx.priceFor(current.building).lamports;
       const poster = rec?.sign?.text
-        ? { title: rec.sign.text, line: `Owned by ${rec.owner === me() ? 'you' : shortAddr(rec.owner)}`, color: SIGN_COLORS[rec.sign.color] || SIGN_COLORS[0] }
+        ? { title: rec.sign.text, line: `Owned by ${rec.owner === me() ? 'you' : who(rec.owner)}`, color: SIGN_COLORS[rec.sign.color] || SIGN_COLORS[0] }
         : rec
-          ? { title: rec.owner === me() ? 'Yours' : 'Owned', line: rec.owner === me() ? 'Put up your billboard' : `by ${shortAddr(rec.owner)} · make an offer`, color: rec.owner === me() ? '#2af5a8' : '#8f6bff' }
+          ? { title: rec.owner === me() ? 'Yours' : 'Owned', line: rec.owner === me() ? 'Put up your billboard' : `by ${who(rec.owner)} · make an offer`, color: rec.owner === me() ? '#2af5a8' : '#8f6bff' }
           : { title: 'For sale', line: `${fmtSol(price)} SOL · Solworld`, color: '#2af5a8' };
       posters.push({ lng, lat, big: true, ...poster, onClick: () => street.close() });
     }
@@ -394,7 +404,15 @@ async function boot() {
   }
 
   async function dropIn(target) {
-    if (!street.available) return;
+    if (!street.available) {
+      toast({
+        title: 'Street view isn’t switched on yet',
+        body: settings.live ? 'The site owner needs to add a Google key in Operator tools (enable “Maps JavaScript API”).' : 'Add a Google key in Operator tools to walk the streets inside Solworld.',
+        tone: 'info',
+        duration: 8000,
+      });
+      return;
+    }
     target ||= current?.building.center || mapc.center;
     const label = current && distanceM(current.building.center, target) < 60 ? buildingTitle(current.building.tags) || 'This building' : 'Street level';
     const loadingToast = toast({ title: 'Dropping in…', tone: 'pending' });
@@ -886,7 +904,7 @@ async function boot() {
     const building = current?.key === offer.key ? current.building : { key: offer.key, tags: {} };
     const fee = saleFee(offer.price, settings.feeBps);
     await runAction({
-      label: `${fmtSol(offer.price)} SOL from ${shortAddr(offer.buyer)} · you receive ${fmtSol(offer.price - fee)} SOL`,
+      label: `${fmtSol(offer.price)} SOL from ${who(offer.buyer)} · you receive ${fmtSol(offer.price - fee)} SOL`,
       pending: 'Accepting offer',
       success: `Sold for ${fmtSol(offer.price)} SOL`,
       fn: async () => {
@@ -911,9 +929,17 @@ async function boot() {
         if (info.authority !== me()) throw new FriendlyError('This offer was made to a previous owner.');
         const buyerBalance = await rpc.getBalance(offer.buyer);
         if (buyerBalance < offer.price + 10_000) throw new FriendlyError('The buyer no longer has enough SOL for this offer.');
-        const sale = buildSaleMessage({ buyer: offer.buyer, seller: me(), treasury, reference: registry.address, key: offer.key, price: offer.price, feeBps: settings.feeBps, nonce: offer.nonce, nonceValue: offer.nonceValue });
+        // The buyer pre-signed the split at the fee rate of the time (it was 5% before the 1% change).
         const buyerSig = base58Decode(offer.buyerSig);
-        if (!(await verifySignature(buyerSig, sale.bytes, offer.buyer))) throw new FriendlyError('This offer’s signature is invalid.');
+        let sale = null;
+        for (const feeBps of [...new Set([settings.feeBps, 500, 100])]) {
+          const m = buildSaleMessage({ buyer: offer.buyer, seller: me(), treasury, reference: registry.address, key: offer.key, price: offer.price, feeBps, nonce: offer.nonce, nonceValue: offer.nonceValue });
+          if (await verifySignature(buyerSig, m.bytes, offer.buyer)) {
+            sale = m;
+            break;
+          }
+        }
+        if (!sale) throw new FriendlyError('This offer’s signature is invalid.');
         const wire = serializeUnsignedTransaction(sale);
         placeSignature(wire, sale, offer.buyer, buyerSig);
         await wallet.signInto(wire, sale);
@@ -938,6 +964,14 @@ async function boot() {
         live &&
         toast({ title: 'Tip', body: 'Cancelling hides the offer everywhere. To be 100% sure it can never execute, keep your balance below the offer amount.', tone: 'info', duration: 8000 }),
     });
+  }
+
+  async function setName(name) {
+    if (!(await ensureWallet())) return false;
+    const memo = buildMemo('name', { name });
+    const clean = parseMemo(memo)?.name ?? '';
+    const result = await runAction({ label: clean || 'Name removed', pending: 'Saving your name', success: clean ? `You’re “${clean}” now` : 'Name removed', fn: () => sendAction({ memo }) });
+    return !!result?.ok;
   }
 
   async function setSign({ text, color }) {
@@ -1140,6 +1174,38 @@ async function boot() {
     }
   }
 
+  /**
+   * Checks a Google key the way the site uses it, from this page (so the
+   * website restriction is tested too). Returns [{ name, ok, detail, fix }].
+   */
+  async function testGoogleKey(key) {
+    key ||= settings.realistic3d.googleKey || registry.state.key3d;
+    if (!key) return [{ name: 'Google key', ok: false, detail: 'No key saved yet.', fix: 'Paste your key above and tap Save key.' }];
+    const out = [];
+    try {
+      const res = await fetch(`https://tile.googleapis.com/v1/3dtiles/root.json?key=${encodeURIComponent(key)}`);
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = await res.clone().json();
+        if (j?.error?.message) detail = j.error.message;
+      } catch {
+        // not JSON
+      }
+      out.push({ name: 'Realistic 3D (Map Tiles API)', ok: res.ok, detail: res.ok ? 'Working' : detail, fix: res.ok ? '' : 'Enable “Map Tiles API”, link billing, and allow this website in the key’s restrictions.' });
+    } catch (err) {
+      out.push({ name: 'Realistic 3D (Map Tiles API)', ok: false, detail: err.message, fix: 'Check your connection and try again.' });
+    }
+    try {
+      const probe = new StreetDrop({ root: document.createElement('div') });
+      probe.setKey(key);
+      await probe.check();
+      out.push({ name: 'Walk the street (Maps JavaScript API)', ok: true, detail: 'Working', fix: '' });
+    } catch (err) {
+      out.push({ name: 'Walk the street (Maps JavaScript API)', ok: false, detail: err.message, fix: 'Enable “Maps JavaScript API” on the same project and allow it in the key’s API restrictions.' });
+    }
+    return out;
+  }
+
   /** Current market price of a token in SOL (DexScreener), to prefill the operator form. */
   async function coinMarket(mint) {
     const res = await fetch(`${settings.services.dexscreener}${encodeURIComponent(mint)}`);
@@ -1173,7 +1239,7 @@ async function boot() {
                 'div',
                 { class: 'op-refund' },
                 avatar(r.owner, 26),
-                h('div', { class: 'grow' }, h('div', { class: 'mono' }, `${r.key} · ${shortAddr(r.owner)}`), h('small', null, moved ? 'Location in the memo doesn’t match the building' : `Paid ${fmtSol(r.price)} SOL, price is ${fmtSol(expected)} SOL`)),
+                h('div', { class: 'grow' }, h('div', { class: 'mono' }, `${r.key} · ${who(r.owner)}`), h('small', null, moved ? 'Location in the memo doesn’t match the building' : `Paid ${fmtSol(r.price)} SOL, price is ${fmtSol(expected)} SOL`)),
                 h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => operatorAction('revoke', r.sig, r.acquired === 'buy' ? r.price : 0, r.owner, e.currentTarget) }, r.acquired === 'buy' ? 'Revoke & refund' : 'Revoke'),
               ),
             )
@@ -1297,7 +1363,7 @@ async function boot() {
         toastedOffers.add(rec.sig);
         toast({
           title: `New offer: ${fmtSol(rec.price)} SOL`,
-          body: `${shortAddr(rec.buyer)} wants ${buildingLabel(rec.key)}. Open it to accept.`,
+          body: `${who(rec.buyer)} wants ${buildingLabel(rec.key)}. Open it to accept.`,
           tone: 'mine',
           duration: 12000,
           action: { label: 'View', onClick: () => ctx.onOpenOffer(rec) },
@@ -1308,7 +1374,7 @@ async function boot() {
       } else if ((rec.kind === 'buy' || rec.kind === 'hold' || rec.kind === 'sale') && rec.owner !== me()) news.push(rec);
     }
     if (news.length > 2) toast({ title: `${news.length} buildings just changed hands`, body: 'See the Activity tab for details.', tone: 'owned', duration: 4500 });
-    else for (const r of news) toast({ title: `${shortAddr(r.owner)} ${r.kind === 'sale' ? 'bought from an owner' : 'got a building'}`, body: `${placeLabel(r.lat, r.lng)} · ${fmtSol(r.price)} SOL`, tone: 'owned', duration: 4500 });
+    else for (const r of news) toast({ title: `${who(r.owner)} ${r.kind === 'sale' ? 'bought from an owner' : 'got a building'}`, body: `${placeLabel(r.lat, r.lng)} · ${fmtSol(r.price)} SOL`, tone: 'owned', duration: 4500 });
   }
 
   function buildingLabel(key) {

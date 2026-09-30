@@ -13,7 +13,7 @@ const DEFAULT_RPC = {
 const DEFAULTS = {
   treasury: '',
   cluster: 'mainnet-beta',
-  marketFeePercent: 5,
+  marketFeePercent: 1,
   memecoin: { mint: '', symbol: '', solPerToken: [] },
   // Realistic 3D close-ups (Google Photorealistic 3D Tiles). A Google Maps
   // Platform key with the "Map Tiles API" enabled, restricted to your domain.

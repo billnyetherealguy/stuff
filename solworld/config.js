@@ -21,8 +21,8 @@ window.SOLWORLD_CONFIG = {
   // "mainnet-beta" for real SOL. Use "devnet" to test with free devnet SOL.
   cluster: "mainnet-beta",
 
-  // Your cut of every resale between players, in percent.
-  marketFeePercent: 5,
+  // Tax on every resale between players, in percent, paid to your wallet.
+  marketFeePercent: 1,
 
   // Your meme coin. Holders paste their wallet, sign once to prove it's theirs,
   // and get building credit equal to what their coins are worth in SOL.

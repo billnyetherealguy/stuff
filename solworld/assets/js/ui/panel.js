@@ -5,7 +5,7 @@ import { buildingFacts, buildingTitle, satelliteView } from '../info.js';
 import { PHASE_LABELS, sunPosition } from '../sun.js';
 import { SIGN_COLORS } from '../registry.js';
 import { placeLabel } from '../cities.js';
-import { avatar, copyText, fmtCoord, fmtInt, fmtSol, fmtUsd, h, shortAddr, timeAgo } from '../util.js';
+import { avatar, copyText, fmtCoord, fmtInt, fmtSol, fmtUsd, h, timeAgo, who } from '../util.js';
 import { icon } from './icons.js';
 
 const STAGES = {
@@ -32,19 +32,12 @@ export class BuildingPanel {
     this.mediaStage = h('div', { class: 'media-stage' });
     this.mediaTabs = h('div', { class: 'media-tabs', role: 'tablist' });
     this.streetLink = h(
-      'a',
+      'button',
       {
         class: 'media-chip media-chip--street',
-        target: '_blank',
-        rel: 'noopener',
         title: 'Walk the real street here',
-        onclick: (e) => {
-          // With a Google key, drop into the street right here instead of leaving the site.
-          if (this.ctx.streetAvailable?.() && this.state?.center) {
-            e.preventDefault();
-            this.ctx.onStreet(this.state.center);
-          }
-        },
+        // Always inside Solworld: never sends people off to Google Maps.
+        onclick: () => this.state?.center && this.ctx.onStreet(this.state.center),
       },
       h('span', { svg: icon('street', { size: 14 }) }),
       'Street View',
@@ -239,7 +232,6 @@ export class BuildingPanel {
     );
 
     const [lng, lat] = s.center;
-    this.streetLink.href = `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lat.toFixed(6)},${lng.toFixed(6)}`;
 
     // What time of day is it at the building right now?
     const sun = sunPosition(lng, lat);
@@ -362,7 +354,7 @@ export class BuildingPanel {
         h(
           'div',
           { class: 'owner-name' },
-          h('button', { class: 'link-btn mono', onclick: () => this.ctx.onOwner(rec.owner) }, mine ? 'You' : shortAddr(rec.owner, 4, 4)),
+          h('button', { class: 'link-btn mono', onclick: () => this.ctx.onOwner(rec.owner) }, mine ? 'You' : who(rec.owner, 4, 4)),
           h('button', {
             class: 'mini-btn',
             title: 'Copy address',
@@ -449,7 +441,7 @@ export class BuildingPanel {
                 'div',
                 { class: 'offer' },
                 avatar(o.buyer, 24),
-                h('div', { class: 'grow' }, h('b', { class: 'mono' }, `${fmtSol(o.price)} SOL`), h('small', null, `${o.buyer === me ? 'You' : shortAddr(o.buyer)} · ${timeAgo(o.time)}`)),
+                h('div', { class: 'grow' }, h('b', { class: 'mono' }, `${fmtSol(o.price)} SOL`), h('small', null, `${o.buyer === me ? 'You' : who(o.buyer)} · ${timeAgo(o.time)}`)),
                 mine && !this.busy
                   ? h('button', { class: 'btn btn--accent btn--sm', onclick: () => this.ctx.onAccept(o) }, 'Accept')
                   : o.buyer === me && !this.busy
@@ -548,7 +540,7 @@ export class BuildingPanel {
     return h(
       'div',
       { class: 'offer-form' },
-      h('div', { class: 'owned-banner' }, h('span', { svg: icon('building', { size: 16 }) }), 'Owned by ', h('span', { class: 'mono' }, shortAddr(rec.owner))),
+      h('div', { class: 'owned-banner' }, h('span', { svg: icon('building', { size: 16 }) }), 'Owned by ', h('span', null, who(rec.owner))),
       mine ? h('p', { class: 'foot-note' }, `Your offer: ${fmtSol(mine.price)} SOL — keep that much in your wallet until the owner decides.`) : null,
       wallet.exists
         ? h('div', { class: 'field-row' }, input, h('span', { class: 'field-unit' }, 'SOL'), h('button', { class: 'btn btn--primary btn--sm', onclick: submit }, mine ? 'Offer again' : 'Make offer'))

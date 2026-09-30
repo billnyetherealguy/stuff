@@ -105,6 +105,25 @@ export class StreetDrop extends Emitter {
     return !!this.key;
   }
 
+  /** Loads the API and asks for one panorama (New York) to prove the key works here. */
+  async check() {
+    const maps = await Promise.race([loadMaps(this.key), new Promise((_, rej) => setTimeout(() => rej(new Error('Google Maps didn’t answer')), 15000))]);
+    const { StreetViewService } = await maps.importLibrary('streetView');
+    await new Promise((resolve, reject) => {
+      const fail = setTimeout(() => reject(new Error('Street View didn’t answer (key refused?)')), 12000);
+      const prev = globalThis.gm_authFailure;
+      globalThis.gm_authFailure = () => {
+        clearTimeout(fail);
+        prev?.();
+        reject(new Error('Google refused the key for the Maps JavaScript API'));
+      };
+      new StreetViewService()
+        .getPanorama({ location: { lat: 40.758, lng: -73.9855 }, radius: 100 })
+        .then(() => (clearTimeout(fail), resolve()))
+        .catch((e) => (clearTimeout(fail), reject(new Error(`Street View: ${e?.code || e?.message || e}`))));
+    });
+  }
+
   _ui() {
     if (this.stage) return;
     this.stage = h('div', { class: 'street-pano' });

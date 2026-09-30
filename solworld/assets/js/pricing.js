@@ -44,3 +44,57 @@ export function priceBuilding(building) {
   const lamports = Math.min(MAX_LAMPORTS, Math.max(MIN_LAMPORTS, roundNice(Math.round(raw))));
   return { lamports, factors };
 }
+
+/* ---------------------------------------------------------------- land */
+
+export const LAND_MAX_DEG = 8; // biggest takeover side, in degrees (a large state)
+
+/**
+ * Price of a whole area ([west, south, east, north]), deterministic from its
+ * size and how busy it is (sampled on a grid), so every visitor computes the
+ * same number. Roughly the price of its buildings, with a bulk discount in
+ * dense downtowns.
+ */
+export function landPrice([w, s, e, n]) {
+  if (!(e > w && n > s)) return Infinity;
+  const midLat = (s + n) / 2;
+  const kx = 111_320 * Math.cos((midLat * Math.PI) / 180);
+  const area = (e - w) * kx * (n - s) * 110_574; // m²
+  const N = 12;
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const f = busyness(s + ((j + 0.5) / N) * (n - s), w + ((i + 0.5) / N) * (e - w)).factor;
+      sum += 0.15 + f ** 1.5 - 1; // empty countryside is cheap, downtowns aren't
+    }
+  }
+  const raw = MIN_LAMPORTS * (area / 700) * (sum / (N * N));
+  return Math.max(MIN_LAMPORTS * 5, roundNice(Math.round(raw)));
+}
+
+/** Rough number of buildings in an area when they aren't all loaded on the map. */
+export function estimateBuildings([w, s, e, n]) {
+  const midLat = (s + n) / 2;
+  const km2 = ((e - w) * 111.32 * Math.cos((midLat * Math.PI) / 180)) * ((n - s) * 110.574);
+  const N = 8;
+  let dens = 0;
+  for (let i = 0; i < N; i++) {
+    for (let j = 0; j < N; j++) {
+      const f = busyness(s + ((j + 0.5) / N) * (n - s), w + ((i + 0.5) / N) * (e - w)).factor;
+      dens += 12 + 260 * Math.max(0, f - 1) ** 0.6;
+    }
+  }
+  return Math.round(km2 * (dens / (N * N)));
+}
+
+/** What you rule, by how many buildings you own in one takeover. */
+export const TIERS = [
+  { min: 200_000, name: 'Country' },
+  { min: 20_000, name: 'State' },
+  { min: 2_000, name: 'Mega city' },
+  { min: 200, name: 'City' },
+  { min: 50, name: 'Town' },
+  { min: 5, name: 'Neighborhood' },
+  { min: 0, name: 'Block' },
+];
+export const tierFor = (count) => TIERS.find((t) => count >= t.min).name;

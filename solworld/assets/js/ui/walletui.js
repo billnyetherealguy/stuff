@@ -5,7 +5,7 @@
 import { renderSVG } from '../../../vendor/uqr-0.1.3/uqr.mjs';
 import { WALLET_LINKS, isUserRejection } from '../wallet.js';
 import { isAddress } from '../solana.js';
-import { avatar, copyText, fmtInt, fmtSol, h, isTouch, shortAddr } from '../util.js';
+import { avatar, copyText, fmtInt, fmtSol, h, isTouch, shortAddr, who } from '../util.js';
 import { icon } from './icons.js';
 import { openModal } from './feedback.js';
 
@@ -34,7 +34,7 @@ export class WalletUI {
       'button',
       { class: 'wallet-pill', 'aria-haspopup': 'menu', 'aria-expanded': String(this.menuOpen), onclick: () => this.toggleMenu() },
       avatar(address, 24),
-      h('span', { class: 'wallet-pill-main' }, h('span', { class: 'mono' }, wallet.balance == null ? '— SOL' : `${fmtSol(wallet.balance)} SOL`), h('small', null, shortAddr(address))),
+      h('span', { class: 'wallet-pill-main' }, h('span', { class: 'mono' }, wallet.balance == null ? '— SOL' : `${fmtSol(wallet.balance)} SOL`), h('small', null, who(address))),
       credit > 0 ? h('span', { class: 'gift-badge', title: `${fmtSol(credit)} SOL of ${settings.memecoinView.symbol} credit`, svg: icon('gift', { size: 13 }) }) : null,
       h('span', { class: 'wallet-pill-caret', svg: icon('chevronDown', { size: 14 }) }),
     );
@@ -47,7 +47,7 @@ export class WalletUI {
         'div',
         { class: 'wallet-menu-head' },
         avatar(address, 40),
-        h('div', null, h('div', { class: 'wallet-menu-bal' }, wallet.balance == null ? '—' : fmtSol(wallet.balance), h('small', null, ' SOL')), h('div', { class: 'wallet-menu-sub mono' }, shortAddr(address, 6, 6))),
+        h('div', null, h('div', { class: 'wallet-menu-bal' }, wallet.balance == null ? '—' : fmtSol(wallet.balance), h('small', null, ' SOL')), h('div', { class: 'wallet-menu-sub' }, who(address, 6, 6))),
       ),
       h(
         'div',
@@ -67,6 +67,7 @@ export class WalletUI {
       menuItem('building', `My buildings (${owned?.count || 0})`, () => (this.toggleMenu(false), this.ctx.onMine())),
       incoming.length ? menuItem('sparkle', `Offers on my buildings (${incoming.length})`, () => (this.toggleMenu(false), this.ctx.onOpenOffer(incoming[0]))) : null,
       myOffers.length ? menuItem('clock', `My open offers (${myOffers.length})`, () => (this.toggleMenu(false), this.ctx.onOpenOffer(myOffers[0]))) : null,
+      menuItem('sparkle', this.ctx.myName() ? `Name: ${this.ctx.myName()}` : 'Set your name', () => (this.toggleMenu(false), this.nameDialog())),
       menuItem('copy', 'Copy address', async () => {
         await copyText(address);
         this.toggleMenu(false);
@@ -360,6 +361,36 @@ export class WalletUI {
               },
             },
           ],
+    });
+  }
+
+  /** Pick a display name shown instead of the wallet address everywhere. */
+  nameDialog() {
+    const input = h('input', { class: 'field-input', maxlength: '24', placeholder: 'Your name (2–24 characters)', value: this.ctx.myName(), autocomplete: 'nickname' });
+    const note = h('p', { class: 'field-error' });
+    const check = () => {
+      const v = input.value.trim();
+      note.textContent = v && this.ctx.nameTaken(v) ? 'That name is taken.' : '';
+    };
+    input.addEventListener('input', check);
+    openModal({
+      eyebrow: 'Your profile',
+      title: 'Your name on Solworld',
+      size: 'sm',
+      content: h('div', { class: 'form' }, h('p', null, 'Shown on the leaderboard, your buildings, your territories and your posters instead of your wallet address. First come, first served.'), input, note, h('p', { class: 'modal-fine' }, 'Saved on Solana (a tiny network fee, about 0.00001 SOL). Leave empty to go back to your address.')),
+      actions: [
+        { label: 'Cancel', kind: 'ghost' },
+        {
+          label: 'Save name',
+          kind: 'primary',
+          onClick: async (close) => {
+            check();
+            if (note.textContent) return;
+            close();
+            await this.ctx.onSetName(input.value);
+          },
+        },
+      ],
     });
   }
 

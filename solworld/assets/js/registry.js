@@ -19,6 +19,7 @@
 // the same owners. Building keys are OpenStreetMap ids: "w123" / "r456".
 
 import { Emitter } from './emitter.js';
+import { LAND_MAX_DEG, landPrice, tierFor } from './pricing.js';
 import {
   MEMO_PROGRAM,
   MEMO_PROGRAM_V1,
@@ -48,6 +49,8 @@ const MEMOS = {
   revoke: new RegExp(`^(${SIG})$`),
   refund: new RegExp(`^(${SIG})$`),
   tiles: /^([A-Za-z0-9_-]{20,64})$/,
+  name: /^([A-Za-z0-9%._~!*'()-]{0,160})$/,
+  land: /^(-?\d{1,3}\.\d{1,5}),(-?\d{1,2}\.\d{1,5}),(-?\d{1,3}\.\d{1,5}),(-?\d{1,2}\.\d{1,5});p=(\d{1,16});n=(\d{1,9});t=([A-Za-z0-9%._~!*'()-]{0,200})$/,
   coin: new RegExp(`^(${ADDR});s=([A-Za-z0-9]{1,12});p=(\\d{1,13}(?:\\.\\d{1,9})?)$`),
 };
 
@@ -56,6 +59,22 @@ export const SIGN_COLORS = ['#2af5a8', '#8f6bff', '#5ad1ff', '#ffd166', '#ff6b9a
 export const isBuildingKey = (key) => typeof key === 'string' && new RegExp(`^${KEY}$`).test(key);
 
 const fixed = (n) => Number(n).toFixed(6);
+
+/**
+ * Display names: 2–24 visible characters, no control/zero-width characters,
+ * single spaces, and nothing that looks like a wallet address.
+ */
+export function cleanName(raw, max = 24) {
+  const s = String(raw || '')
+    .normalize('NFC')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = [...s].slice(0, max).join('').trim();
+  // No look-alike wallet addresses (impersonation).
+  if ([...chars].length < 2 || /^[1-9A-HJ-NP-Za-km-z]{16,}$/.test(s.replace(/\s/g, ''))) return '';
+  return chars;
+}
 
 export function buildMemo(action, fields) {
   switch (action) {
@@ -79,6 +98,13 @@ export function buildMemo(action, fields) {
     case 'revoke':
     case 'refund':
       return `solworld:${action}:${fields.ref}`;
+    case 'land': {
+      // A takeover: everything inside [west, south, east, north].
+      const [w, so, e, n] = fields.bbox.map((v) => Number(v).toFixed(5));
+      return `solworld:land:${w},${so},${e},${n};p=${Math.round(fields.price)};n=${Math.round(fields.count)};t=${encodeURIComponent(cleanName(fields.title, 40)).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+    }
+    case 'name':
+      return `solworld:name:${encodeURIComponent(cleanName(fields.name)).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
     case 'tiles':
       // Operator setting: Google Map Tiles API key for realistic 3D (public, domain-restricted).
       return `solworld:tiles:${fields.apiKey}`;
@@ -124,6 +150,26 @@ export function parseMemo(text) {
     }
     case 'tiles':
       return { action, apiKey: g[1] };
+    case 'land': {
+      const bbox = [Number(g[1]), Number(g[2]), Number(g[3]), Number(g[4])];
+      if (!(bbox[0] >= -180 && bbox[2] <= 180 && bbox[1] >= -90 && bbox[3] <= 90)) return null;
+      let title = '';
+      try {
+        title = cleanName(decodeURIComponent(g[7]), 40);
+      } catch {
+        return null;
+      }
+      return { action, bbox, price: Number(g[5]), count: Number(g[6]), title };
+    }
+    case 'name': {
+      let name = '';
+      try {
+        name = cleanName(decodeURIComponent(g[1]));
+      } catch {
+        return null;
+      }
+      return { action, name };
+    }
     case 'coin':
       return { action, mint: g[1], symbol: g[2], lamportsPerToken: Number(g[3]) };
     default:
@@ -218,6 +264,8 @@ export function computeState(events, rules) {
   // The active meme coin: config.js first, then any settings the treasury
   // publishes on-chain ("coin" actions), each effective from its own time.
   let key3d = null;
+  const names = new Map(); // wallet -> display name
+  const nameOwners = new Map(); // lowercase name -> wallet
   let coin = memecoin?.mint ? { ...memecoin, prices: [...(memecoin.prices || [])] } : null;
   const buildings = new Map();
   const owners = new Map();
@@ -229,7 +277,9 @@ export function computeState(events, rules) {
   const activity = [];
   const revoked = new Set();
   const refunded = new Map();
-  const totals = { buildings: 0, owners: 0, volume: 0, revenue: 0, buys: 0, holds: 0, sales: 0 };
+  const totals = { buildings: 0, owners: 0, volume: 0, revenue: 0, buys: 0, holds: 0, sales: 0, lands: 0 };
+  const territories = [];
+  const territoryAt = (lng, lat) => territories.find((t) => lng >= t.bbox[0] && lng <= t.bbox[2] && lat >= t.bbox[1] && lat <= t.bbox[3]) || null;
 
   for (const ev of events) {
     if ((ev.action === 'revoke' || ev.action === 'refund') && ev.signers.includes(treasury) && ev.transfers.some((t) => t.s === treasury)) {
@@ -241,7 +291,7 @@ export function computeState(events, rules) {
   const ownerRec = (address) => {
     let o = owners.get(address);
     if (!o) {
-      o = { address, count: 0, spent: 0, value: 0, keys: new Set(), first: null, last: null };
+      o = { address, count: 0, spent: 0, value: 0, keys: new Set(), territories: [], first: null, last: null };
       owners.set(address, o);
     }
     return o;
@@ -269,6 +319,24 @@ export function computeState(events, rules) {
 
   for (const raw of events) {
     const ev = { ...raw, actor: actorOf(raw, treasury) };
+    if (ev.action === 'name') {
+      // First come, first served (case-insensitive); an empty name clears yours.
+      if (!ev.actor || revoked.has(ev.sig)) continue;
+      const lower = ev.name.toLowerCase();
+      const holder = nameOwners.get(lower);
+      if (lower && holder && holder !== ev.actor) {
+        voidEvent(ev, 'name-taken');
+        continue;
+      }
+      const old = names.get(ev.actor);
+      if (old) nameOwners.delete(old.toLowerCase());
+      if (ev.name) {
+        names.set(ev.actor, ev.name);
+        nameOwners.set(lower, ev.actor);
+      } else names.delete(ev.actor);
+      bySig.set(ev.sig, { record: { kind: 'name', owner: ev.actor, name: ev.name } });
+      continue;
+    }
     if (ev.action === 'tiles') {
       if (treasury && ev.signers.includes(treasury) && !revoked.has(ev.sig)) key3d = ev.apiKey;
       continue;
@@ -285,10 +353,54 @@ export function computeState(events, rules) {
     if (!ev.actor) continue; // not paying the treasury: not a Solworld action
     const isRevoked = revoked.has(ev.sig);
 
+    if (ev.action === 'land') {
+      // City takeover: pay at least the area's land price; no overlap with
+      // earlier takeovers. Everything inside that isn't already owned is theirs.
+      const paid = sumTransfers(ev, ev.actor, treasury);
+      const [w, so, e, n] = ev.bbox;
+      if (isRevoked) {
+        voidEvent(ev, 'revoked', paid);
+        continue;
+      }
+      if (!(e > w && n > so && e - w <= LAND_MAX_DEG && n - so <= LAND_MAX_DEG)) {
+        voidEvent(ev, 'bad-land', paid);
+        continue;
+      }
+      if (territories.some((t) => t.bbox[0] < e && t.bbox[2] > w && t.bbox[1] < n && t.bbox[3] > so)) {
+        voidEvent(ev, 'land-taken', paid);
+        continue;
+      }
+      const floor = landPrice(ev.bbox) * 0.98; // tiny tolerance for float differences between browsers
+      if (!(ev.price >= floor) || paid < ev.price) {
+        voidEvent(ev, 'underpaid', paid);
+        continue;
+      }
+      const t = { sig: ev.sig, owner: ev.actor, bbox: ev.bbox, title: ev.title, count: ev.count, tier: tierFor(ev.count), price: ev.price, time: ev.time };
+      territories.push(t);
+      const o = ownerRec(ev.actor);
+      o.count += ev.count;
+      o.value += ev.price;
+      o.spent += paid;
+      o.territories.push(t);
+      o.first ??= ev.time;
+      o.last = ev.time;
+      totals.lands++;
+      totals.volume += paid;
+      totals.revenue += paid;
+      const rec = { kind: 'land', key: null, owner: ev.actor, price: ev.price, paid, sig: ev.sig, time: ev.time, lat: (so + n) / 2, lng: (w + e) / 2, title: ev.title, tier: t.tier, count: ev.count };
+      activity.push(rec);
+      bySig.set(ev.sig, { record: rec });
+      continue;
+    }
+
     if (ev.action === 'buy' || ev.action === 'hold') {
       const paid = ev.action === 'buy' ? sumTransfers(ev, ev.actor, treasury) : 0;
       if (isRevoked) {
         voidEvent(ev, 'revoked', paid);
+        continue;
+      }
+      if (territoryAt(ev.lng, ev.lat)) {
+        voidEvent(ev, 'in-territory', paid);
         continue;
       }
       if (buildings.has(ev.key)) {
@@ -372,7 +484,9 @@ export function computeState(events, rules) {
         voidEvent(ev, 'not-owner', toTreasury);
         continue;
       }
-      if (buyer === seller || !(ev.price >= MIN_PRICE) || toSeller < ev.price - fee || toTreasury < fee) {
+      // The treasury must get at least today's fee and the seller the rest. (A
+      // higher fee paid under an older, higher rate still counts.)
+      if (buyer === seller || !(ev.price >= MIN_PRICE) || toTreasury < fee || toSeller + toTreasury < ev.price) {
         voidEvent(ev, 'bad-sale', toTreasury);
         continue;
       }
@@ -413,13 +527,16 @@ export function computeState(events, rules) {
     o.rank = i + 1;
   });
   for (const o of owners.values()) if (!o.count) o.rank = null;
-  totals.buildings = buildings.size;
+  totals.buildings = buildings.size + territories.reduce((a, t) => a + t.count, 0);
   totals.owners = ranked.length;
   activity.reverse();
 
   return {
     coin,
     key3d,
+    names,
+    territories,
+    territoryAt,
     buildings,
     owners,
     leaderboard: ranked,

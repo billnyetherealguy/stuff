@@ -92,6 +92,14 @@ export function fmtUsd(value) {
   });
 }
 
+// People can pick a display name (registry "name" action). `who()` shows it,
+// falling back to the short wallet address.
+let nameResolver = null;
+export const setNameResolver = (fn) => {
+  nameResolver = fn;
+};
+export const who = (a, head = 4, tail = 4) => (a && nameResolver?.(a)) || shortAddr(a, head, tail);
+
 export const shortAddr = (a, head = 4, tail = 4) => (a && a.length > head + tail + 1 ? `${a.slice(0, head)}…${a.slice(-tail)}` : a || '');
 
 export function timeAgo(unixSeconds) {

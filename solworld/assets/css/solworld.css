@@ -3956,3 +3956,30 @@ body.has-street .rail,
 body.has-street #panel {
   visibility: hidden;
 }
+.key-report:empty {
+  display: none;
+}
+.key-report {
+  display: grid;
+  gap: 8px;
+}
+.key-check {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+.key-check small {
+  color: var(--ink-3);
+}
+.key-check.is-ok b {
+  color: var(--mint);
+}
+.key-check.is-bad b {
+  color: var(--danger);
+}
+.key-check .key-fix {
+  color: var(--ink-2);
+}

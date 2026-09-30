@@ -1,7 +1,7 @@
 // Left rail: leaderboard ("who owns the most"), live activity, owner profiles.
 import { placeLabel } from '../cities.js';
 import { buildingTitle } from '../info.js';
-import { avatar, fmtInt, fmtSol, h, shortAddr, timeAgo } from '../util.js';
+import { avatar, fmtInt, fmtSol, h, timeAgo, who } from '../util.js';
 import { icon } from './icons.js';
 
 export class Rail {
@@ -107,7 +107,7 @@ export class Rail {
               h(
                 'span',
                 { class: 'leader-main' },
-                h('span', { class: 'leader-name mono' }, o.address === me ? 'You' : shortAddr(o.address, 4, 4)),
+                h('span', { class: 'leader-name mono' }, o.address === me ? 'You' : who(o.address, 4, 4)),
                 h('span', { class: 'leader-bar' }, h('i', { style: { width: `${Math.max(6, (o.count / max) * 100)}%` } })),
               ),
               h('span', { class: 'leader-count' }, h('b', null, fmtInt(o.count)), h('small', null, `${fmtSol(o.value)} SOL`)),
@@ -140,7 +140,7 @@ export class Rail {
               h(
                 'span',
                 { class: 'feed-main' },
-                h('span', { class: 'feed-line' }, h('b', { class: 'mono' }, r.owner === me ? 'You' : shortAddr(r.owner)), r.kind === 'hold' ? ' took a building with credit' : r.kind === 'sale' ? ` bought from ${r.seller === me ? 'you' : shortAddr(r.seller)}` : ' bought a building'),
+                h('span', { class: 'feed-line' }, h('b', { class: 'mono' }, r.owner === me ? 'You' : who(r.owner)), r.kind === 'hold' ? ' took a building with credit' : r.kind === 'sale' ? ` bought from ${r.seller === me ? 'you' : who(r.seller)}` : ' bought a building'),
                 h('span', { class: 'feed-meta' }, h('span', { svg: icon('pin', { size: 12 }) }), this.label(r), h('span', { class: 'dot-sep' }, '·'), timeAgo(r.time)),
               ),
               h('span', { class: `feed-amt${r.kind === 'hold' ? ' is-free' : ''}` }, r.kind === 'hold' ? 'CREDIT' : `${fmtSol(r.price)} SOL`),
@@ -171,7 +171,7 @@ export class Rail {
           'div',
           { class: 'owner-hero' },
           avatar(address, 56),
-          h('div', { class: 'owner-hero-name mono' }, address === me ? 'You' : shortAddr(address, 6, 6)),
+          h('div', { class: 'owner-hero-name mono' }, address === me ? 'You' : who(address, 6, 6)),
           h(
             'div',
             { class: 'owner-hero-actions' },
@@ -221,7 +221,7 @@ export class Rail {
         'button',
         { class: 'me-row', onclick: () => this.showOwner(me) },
         avatar(me, 26),
-        h('span', { class: 'me-main' }, h('b', null, 'You'), h('small', { class: 'mono' }, shortAddr(me))),
+        h('span', { class: 'me-main' }, h('b', null, 'You'), h('small', null, who(me))),
         h('span', { class: 'me-rank' }, mine ? `#${mine.rank} · ${fmtInt(mine.count)}` : 'Unranked'),
       ),
     );

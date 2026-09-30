@@ -1,7 +1,7 @@
 // Loader, hero, stats, map controls, hints, status pill and info modals.
 import { FEATURED } from '../cities.js';
 import { tokenPriceAt } from '../registry.js';
-import { avatar, countTo, fmtInt, fmtSol, h, shortAddr, timeAgo } from '../util.js';
+import { avatar, countTo, fmtInt, fmtSol, h, shortAddr, timeAgo, who } from '../util.js';
 import { BRAND_MARK, icon } from './icons.js';
 import { openModal } from './feedback.js';
 
@@ -274,7 +274,7 @@ export function openOperator(ctx) {
       'div',
       { class: 'op-refund' },
       avatar(v.buyer || v.actor, 26),
-      h('div', { class: 'grow' }, h('div', { class: 'mono' }, shortAddr(v.buyer || v.actor, 6, 6)), h('small', null, `${reasons[v.reason] || v.reason} · ${v.key || ''} · ${timeAgo(v.time)}`)),
+      h('div', { class: 'grow' }, h('div', { class: 'mono' }, who(v.buyer || v.actor, 6, 6)), h('small', null, `${reasons[v.reason] || v.reason} · ${v.key || ''} · ${timeAgo(v.time)}`)),
       h('b', { class: 'mono' }, `${fmtSol(v.paid - (state.refunded.get(v.sig) || 0))} SOL`),
       settings.live ? h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => ctx.onRefund(v, e.currentTarget) }, 'Refund') : null,
     );
@@ -345,13 +345,36 @@ export function openOperator(ctx) {
 
   // Google Map Tiles API key for the realistic 3D close-ups.
   const keyIn = h('input', { class: 'field-input', placeholder: 'Google Maps API key (starts with AIza…)', spellcheck: 'false', autocomplete: 'off' });
+  const keyReport = h('div', { class: 'key-report' });
   const keyForm = h(
     'div',
     { class: 'form op-coin' },
     ctx.key3dActive() ? h('div', { class: 'holder-preview' }, h('b', null, 'Realistic 3D is on'), ' · zoom into any city to see it') : h('p', { class: 'op-empty' }, 'Off. Add a Google key to show real 3D buildings with real photo textures when people zoom in.'),
     keyIn,
     h('p', { class: 'modal-fine' }, 'In Google Cloud: create a project, enable the “Map Tiles API” (3D) and “Maps JavaScript API” (walking the street), create an API key, and restrict it to your site’s address (Websites). The key becomes public, so the restriction matters.'),
-    h('div', { class: 'field-row' }, h('button', { class: 'btn btn--primary btn--sm', onclick: (e) => keyIn.value.trim() && ctx.onSetKey3d(keyIn.value.trim(), e.currentTarget) }, 'Save key')),
+    h(
+      'div',
+      { class: 'field-row' },
+      h('button', { class: 'btn btn--primary btn--sm', onclick: (e) => keyIn.value.trim() && ctx.onSetKey3d(keyIn.value.trim(), e.currentTarget) }, 'Save key'),
+      h(
+        'button',
+        {
+          class: 'btn btn--ghost btn--sm',
+          onclick: async (e) => {
+            const btn = e.currentTarget;
+            btn.setAttribute('disabled', '');
+            keyReport.replaceChildren(h('span', { class: 'spinner' }), ' Testing with Google…');
+            const rows = await ctx.testGoogleKey(keyIn.value.trim());
+            keyReport.replaceChildren(
+              ...rows.map((r) => h('div', { class: `key-check ${r.ok ? 'is-ok' : 'is-bad'}` }, h('b', null, `${r.ok ? '✓' : '✗'} ${r.name}`), h('small', null, r.detail), r.fix ? h('small', { class: 'key-fix' }, r.fix) : null)),
+            );
+            btn.removeAttribute('disabled');
+          },
+        },
+        'Test key',
+      ),
+    ),
+    keyReport,
   );
 
   openModal({
@@ -395,7 +418,7 @@ export function openOperator(ctx) {
             'div',
             { class: 'op-refunds' },
             signs.slice(0, 50).map((b) =>
-              h('div', { class: 'op-refund' }, h('div', { class: 'grow' }, h('div', null, `“${b.sign.text}”`), h('small', null, `${b.key} · ${shortAddr(b.owner)} · ${timeAgo(b.sign.time)}`)), settings.live ? h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => ctx.onRevoke(b.sign.sig, 0, b.owner, e.currentTarget) }, 'Remove') : null),
+              h('div', { class: 'op-refund' }, h('div', { class: 'grow' }, h('div', null, `“${b.sign.text}”`), h('small', null, `${b.key} · ${who(b.owner)} · ${timeAgo(b.sign.time)}`)), settings.live ? h('button', { class: 'btn btn--ghost btn--sm', onclick: (e) => ctx.onRevoke(b.sign.sig, 0, b.owner, e.currentTarget) }, 'Remove') : null),
             ),
           )
         : h('p', { class: 'op-empty' }, 'No billboards yet.'),

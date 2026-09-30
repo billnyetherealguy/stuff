@@ -265,7 +265,7 @@ async function demo(env) {
       const before = await page.evaluate(() => window.solworld.wallet.balance);
       await page.locator('.offer').getByRole('button', { name: 'Accept' }).click();
       await waitTone(page, 'owned');
-      assert.equal(await page.evaluate(() => window.solworld.wallet.balance) - before, 3_900_000_000 - 195_000_000);
+      assert.equal(await page.evaluate(() => window.solworld.wallet.balance) - before, 3_900_000_000 - 39_000_000); // 1% tax
     });
 
     await step('demo: close up, buildings get lit facades over satellite ground', async () => {
@@ -470,6 +470,7 @@ async function live(env) {
       await bob.send(createNonceMessage({ payer: bob.address, nonce, key: empireKey, lamports: rent, authority: alice, recentBlockhash: await blockhash() }));
       const info = parseNonceAccount((await rpc.getAccountInfo(nonce)).data);
       const price = 3.5 * SOL;
+      // Signed at the old 5% rate on purpose: offers made before the 1% change must stay acceptable.
       const sale = buildSaleMessage({ buyer: bob.address, seller: alice, treasury: treasuryAddr, reference, key: empireKey, price, feeBps: 500, nonce, nonceValue: info.value });
       const buyerSig = bs58.encode(await bob.sign(sale.bytes));
       await act(bob, 0, buildMemo('offer', { key: empireKey, price, nonce, nonceValue: info.value, buyerSig }));
@@ -493,7 +494,7 @@ async function live(env) {
       const offer = await page.evaluate((k) => [...window.solworld.registry.state.offers.values()].find((o) => o.key === k && o.status === 'open'), empireKey);
       assert.equal(offer.buyer, alice);
       // Bob accepts from his side (any client can: the offer is fully pre-signed).
-      const sale = buildSaleMessage({ buyer: alice, seller: bob.address, treasury: treasuryAddr, reference, key: empireKey, price: offer.price, feeBps: 500, nonce: offer.nonce, nonceValue: offer.nonceValue });
+      const sale = buildSaleMessage({ buyer: alice, seller: bob.address, treasury: treasuryAddr, reference, key: empireKey, price: offer.price, feeBps: 100, nonce: offer.nonce, nonceValue: offer.nonceValue });
       const wire = serializeUnsignedTransaction(sale);
       placeSignature(wire, sale, alice, bs58.decode(offer.buyerSig));
       await bob.signInto(wire, sale);

@@ -266,3 +266,73 @@ test('operator sets the meme coin on-chain; only the treasury can, and prices ap
   assert.ok(registry.state.buildings.has('w13'));
   assert.equal(registry.state.buildings.get('w11').price, 1_500_000);
 });
+
+test('sale tax: 1% goes to the treasury; older sales at 5% still count, underpaying the tax does not', async () => {
+  const { computeState, buildMemo: memo, parseMemo } = await import('../../solworld/assets/js/registry.js');
+  const T = 'Treasury11111111111111111111111111111111111';
+  const A = 'Alice111111111111111111111111111111111111111';
+  const B = 'Bob11111111111111111111111111111111111111111';
+  const C = 'Carol111111111111111111111111111111111111111';
+  const ev = (i, fields, signers, transfers) => ({ sig: `s${i}`, slot: i, time: 1000 + i, ...parseMemo(memo(...fields)), signers, transfers, tokens: [], pre: {} });
+  const P = 1_000_000_000;
+  const events = [
+    ev(1, ['buy', { key: 'w1', center: [0, 0], price: P }], [A], [{ s: A, d: T, l: P }]),
+    // old-style 5% split: still valid under the 1% rule
+    ev(2, ['sale', { key: 'w1', price: 2 * P }], [B, A], [{ s: B, d: A, l: 1.9 * P }, { s: B, d: T, l: 0.1 * P }]),
+    // 1% split
+    ev(3, ['sale', { key: 'w1', price: 3 * P }], [C, B], [{ s: C, d: B, l: 2.97 * P }, { s: C, d: T, l: 0.03 * P }]),
+    // tax short-changed: void
+    ev(4, ['sale', { key: 'w1', price: 4 * P }], [A, C], [{ s: A, d: C, l: 3.99 * P }, { s: A, d: T, l: 0.01 * P }]),
+  ];
+  const s = computeState(events, { treasury: T, feeBps: 100, memecoin: null });
+  assert.equal(s.buildings.get('w1').owner, C);
+  assert.equal(s.totals.sales, 2);
+  assert.equal(s.voids.find((v) => v.sig === 's4').reason, 'bad-sale');
+  assert.equal(s.totals.revenue, P + 0.1 * P + 0.03 * P);
+});
+
+test('display names: first come first served, can be changed or cleared, no address look-alikes', async () => {
+  const { computeState, buildMemo: memo, parseMemo } = await import('../../solworld/assets/js/registry.js');
+  const T = 'Treasury11111111111111111111111111111111111';
+  const A = 'Alice111111111111111111111111111111111111111';
+  const B = 'Bob11111111111111111111111111111111111111111';
+  const ev = (i, who, name) => ({ sig: `n${i}`, slot: i, time: i, ...parseMemo(memo('name', { name })), signers: [who], transfers: [{ s: who, d: T, l: 0 }], tokens: [], pre: {} });
+  let s = computeState([ev(1, A, 'Big Bill'), ev(2, B, 'big bill'), ev(3, B, 'Tower Queen')], { treasury: T, feeBps: 100 });
+  assert.equal(s.names.get(A), 'Big Bill');
+  assert.equal(s.names.get(B), 'Tower Queen');
+  assert.equal(s.voids.find((v) => v.sig === 'n2').reason, 'name-taken');
+  s = computeState([ev(1, A, 'Big Bill'), ev(2, A, 'Bill 2'), ev(3, B, 'Big Bill'), ev(4, A, '')], { treasury: T, feeBps: 100 });
+  assert.equal(s.names.get(B), 'Big Bill', 'released names can be taken');
+  assert.equal(s.names.has(A), false, 'empty clears');
+  assert.equal(parseMemo(memo('name', { name: '8tiwEgFFPdkMRhPMZtxHRwvopwf1PeqzgMpVMq7GKkpV' })).name, '');
+});
+
+test('city takeover: land pays the area price, no overlaps, buildings inside are the owner’s, tiers by size', async () => {
+  const { computeState, buildMemo: memo, parseMemo } = await import('../../solworld/assets/js/registry.js');
+  const { landPrice, tierFor } = await import('../../solworld/assets/js/pricing.js');
+  const T = 'Treasury11111111111111111111111111111111111';
+  const A = 'Alice111111111111111111111111111111111111111';
+  const B = 'Bob11111111111111111111111111111111111111111';
+  const box = [-73.99, 40.75, -73.98, 40.757];
+  const price = landPrice(box);
+  const ev = (i, who, fields, paid) => ({ sig: `l${i}`, slot: i, time: i, ...parseMemo(memo(...fields)), signers: [who], transfers: [{ s: who, d: T, l: paid }], tokens: [], pre: {} });
+  const events = [
+    ev(1, B, ['buy', { key: 'w5', center: [-73.985, 40.753], price: 1e8 }], 1e8), // bought before the takeover: stays Bob's
+    ev(2, A, ['land', { bbox: box, price, count: 240, title: 'Alice City' }], price),
+    ev(3, B, ['land', { bbox: [-73.985, 40.755, -73.97, 40.76], price: 1e12, count: 10, title: 'Overlap' }], 1e12), // overlaps
+    ev(4, B, ['buy', { key: 'w6', center: [-73.986, 40.751], price: 1e8 }], 1e8), // inside Alice City now
+    ev(5, B, ['land', { bbox: [-73.97, 40.75, -73.96, 40.757], price: 1000, count: 10, title: 'Cheap' }], 1000), // underpaid
+  ];
+  const s = computeState(events, { treasury: T, feeBps: 100 });
+  assert.equal(s.territories.length, 1);
+  const t = s.territories[0];
+  assert.deepEqual([t.owner, t.title, t.tier], [A, 'Alice City', 'City']);
+  assert.equal(s.buildings.get('w5').owner, B);
+  assert.equal(s.voids.find((v) => v.sig === 'l3').reason, 'land-taken');
+  assert.equal(s.voids.find((v) => v.sig === 'l4').reason, 'in-territory');
+  assert.equal(s.voids.find((v) => v.sig === 'l5').reason, 'underpaid');
+  assert.equal(s.owners.get(A).count, 240);
+  assert.equal(s.leaderboard[0].address, A);
+  assert.equal(s.territoryAt(-73.985, 40.752).title, 'Alice City');
+  assert.deepEqual([tierFor(4), tierFor(5), tierFor(50), tierFor(200), tierFor(2000), tierFor(20000), tierFor(200000)], ['Block', 'Neighborhood', 'Town', 'City', 'Mega city', 'State', 'Country']);
+});

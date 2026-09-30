@@ -25,6 +25,14 @@ test('asphalt, sidewalks, markings and trees from the road network', () => {
   assert.deepEqual(buildStreetscape(center, roads, [park], { radius: 300 }), s);
 });
 
+test('a long road crossing the area with both ends far outside it still gets built', () => {
+  const s = buildStreetscape(center, [road('secondary', [-3000, 50], [3000, 50])], [], { radius: 300 });
+  const kinds = s.surfaces.features.map((f) => f.properties.kind);
+  assert.deepEqual(kinds, ['asphalt', 'sidewalk', 'sidewalk']);
+  const xs = s.surfaces.features[0].geometry.coordinates[0].map(([lng]) => (lng - center[0]) * kx);
+  assert.ok(Math.min(...xs) < -299 && Math.max(...xs) > 299, 'clipped to the area, not dropped');
+});
+
 test('billboards stand on the sidewalk in front of their building', () => {
   const at = (x, y) => ({ lng: ll(x, y)[0], lat: ll(x, y)[1], text: 'BILL', color: '#2af5a8' });
   const s = buildStreetscape(center, roads, [], { radius: 300, signs: [at(60, 25), at(0, 5000)] });
@@ -34,6 +42,10 @@ test('billboards stand on the sidewalk in front of their building', () => {
   const y = (lat - center[1]) * 110_574;
   // North side of the avenue (the building's side), on the sidewalk (7.5–10.3 m from its centre line).
   assert.ok(y > 7.5 && y < 10.3, `y=${y}`);
+  // Even when the building's point sits right against the road, the board stays on the sidewalk.
+  const [close] = buildStreetscape(center, roads, [], { radius: 300, signs: [at(60, 3)] }).signs.features;
+  const yc = (close.geometry.coordinates[1] - center[1]) * 110_574;
+  assert.ok(yc > 7.5 && yc < 10.3, `yc=${yc}`);
   assert.ok(Math.abs(x - 60) < 0.5, `x=${x}`);
   const board = s.trees.features.find((f) => f.properties.part === 'board');
   assert.equal(board.properties.color, '#2af5a8');

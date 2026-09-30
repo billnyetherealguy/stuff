@@ -158,6 +158,46 @@ function trim(pts, startCut, endCut) {
   return out;
 }
 
+/**
+ * Clips a polyline to the square [-r, r]² (a long straight road can cross the
+ * area with both of its vertices far outside it). Returns the pieces inside.
+ */
+function clipLine(pts, r) {
+  const pieces = [];
+  let cur = null;
+  for (let i = 1; i < pts.length; i++) {
+    const [x0, y0] = pts[i - 1];
+    const dx = pts[i][0] - x0;
+    const dy = pts[i][1] - y0;
+    // Liang–Barsky
+    let t0 = 0;
+    let t1 = 1;
+    let ok = true;
+    for (const [p, q] of [[-dx, x0 + r], [dx, r - x0], [-dy, y0 + r], [dy, r - y0]]) {
+      if (p === 0) {
+        if (q < 0) ok = false;
+      } else {
+        const t = q / p;
+        if (p < 0) t0 = Math.max(t0, t);
+        else t1 = Math.min(t1, t);
+      }
+    }
+    if (!ok || t0 > t1) {
+      cur = null;
+      continue;
+    }
+    const a = [x0 + dx * t0, y0 + dy * t0];
+    const b = [x0 + dx * t1, y0 + dy * t1];
+    if (!cur || t0 > 0) {
+      cur = [a];
+      pieces.push(cur);
+    }
+    cur.push(b);
+    if (t1 < 1) cur = null;
+  }
+  return pieces.filter((p) => p.length >= 2 && Math.hypot(p.at(-1)[0] - p[0][0], p.at(-1)[1] - p[0][1]) > 1);
+}
+
 function pointInRing([x, y], ring) {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -193,12 +233,12 @@ export function buildStreetscape(center, roads, greens, { radius = 420, maxTrees
     const g = f.geometry;
     const parts = g?.type === 'LineString' ? [g.coordinates] : g?.type === 'MultiLineString' ? g.coordinates : [];
     for (const line of parts) {
-      const pts = line.map(toM).filter(near);
-      if (pts.length < 2) continue;
-      const id = `${pts[0].map((v) => v.toFixed(0))}|${pts.at(-1).map((v) => v.toFixed(0))}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      lines.push({ pts, spec, cls: f.properties.class });
+      for (const pts of clipLine(line.map(toM), radius)) {
+        const id = `${pts[0].map((v) => v.toFixed(0))}|${pts.at(-1).map((v) => v.toFixed(0))}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        lines.push({ pts, spec, cls: f.properties.class });
+      }
     }
   }
   // Where roads meet (shared vertices): sidewalks stop short there.
@@ -309,7 +349,8 @@ export function buildStreetscape(center, roads, greens, { radius = 420, maxTrees
       nx = -nx;
       ny = -ny;
     }
-    const off = Math.min(best.half + SIDEWALK - 0.5, Math.max(best.half + 0.6, best.d - 1));
+    // On the sidewalk, just in from the curb (a building's point can sit right on its wall).
+    const off = best.half + SIDEWALK * 0.55;
     const sx = best.px + nx * off;
     const sy = best.py + ny * off;
     const box = (along, across, shift = 0) =>

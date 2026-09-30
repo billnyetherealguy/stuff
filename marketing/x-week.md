@@ -86,7 +86,7 @@ Put your site link where it says `LINK`.
 ---
 
 ## Day 7: Leaderboard + your coin
-**Image:** [8-leaderboard-names.png]
+**Image:** a screenshot of your live leaderboard that day (real names and numbers), or [1-every-building-on-earth.png]
 
 > One week in. Who owns the most of the world?
 >

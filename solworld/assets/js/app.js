@@ -381,7 +381,7 @@ async function boot() {
     const z = mapc.zoom;
     if (z < 16) r3dArmed = true;
     paint3DButton();
-    if (!r3d.active && r3dArmed && z >= 16.6 && r3d.available && !hero.visible && storage.get(R3D_PREF) !== 'off' && !flat3D.has(flatKey(mapc.center))) enter3D();
+    if (!r3d.active && r3dArmed && z >= 16.6 && r3d.available && !hero.visible && !takeover.active && storage.get(R3D_PREF) !== 'off' && !flat3D.has(flatKey(mapc.center))) enter3D();
   });
   r3d.on('moveend', (cam) => {
     if (!cam) return;
@@ -441,8 +441,24 @@ async function boot() {
   const street = new StreetDrop({ root: $('#street') });
   street.setKey(settings.realistic3d.googleKey);
   const takeover = new TakeoverTool({ mapc, ctx, root: $('#takeover') });
-  const takeoverButton = h('button', { class: 'ctrl-pill glass', onclick: () => (takeover.active ? takeover.stop() : (hero.hide(), closeSelection(), takeover.begin())) }, h('span', { svg: icon('trophy', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Take over'));
+  const takeoverButton = h('button', { class: 'ctrl-pill glass', onclick: () => (takeover.active ? takeover.stop() : startTakeover()) }, h('span', { svg: icon('trophy', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Take over'));
   $('#controls').append(takeoverButton);
+  /** Works at any zoom: from realistic 3D it drops back to the map, flat and top-down, to draw on. */
+  function startTakeover() {
+    hero.hide();
+    closeSelection();
+    if (r3d.active) {
+      const cam = r3d.cameraState();
+      r3d.exit();
+      document.body.classList.remove('is-3d');
+      r3dArmed = false;
+      if (cam) mapc.map.jumpTo({ center: cam.center, zoom: Math.min(cam.zoom, 18), bearing: cam.bearing });
+      paint3DButton();
+      refreshTraffic(true);
+    }
+    mapc.map.easeTo({ pitch: 0, duration: reduced ? 0 : 450 });
+    takeover.begin();
+  }
   const walkButton = h('button', { class: 'ctrl-pill glass is-hidden', onclick: () => dropIn() }, h('span', { svg: icon('street', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Walk here'));
   $('#controls').append(walkButton);
   const paintWalk = () => walkButton.classList.toggle('is-hidden', !(!hero.visible && (r3d.active || mapc.zoom >= 15.5)));

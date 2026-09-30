@@ -71,7 +71,7 @@ void main() {
   vec3 n = normalize(cross(dFdx(p), dFdy(p)));
   vec4 world = czm_inverseView * vec4(p, 1.0);
   vec3 upEye = normalize(czm_viewRotation * normalize(world.xyz));
-  float wall = 1.0 - smoothstep(0.35, 0.6, abs(dot(n, upEye)));
+  float wall = 1.0 - smoothstep(0.25, 0.45, abs(dot(n, upEye)));
 
   // A window in a real facade photo: darker (glass) than the wall around it.
   // Compare each pixel with the wall ~1.3 m away (about half a window plus a
@@ -92,15 +92,16 @@ void main() {
   }
   float wallLuma = min(ring, ring2) * 0.6 + max(ring, ring2) * 0.4;
   float darker = wallLuma - luma(c);
-  float window = smoothstep(0.05, 0.16, darker) * (1.0 - smoothstep(0.55, 0.8, luma(c)));
+  float window = smoothstep(0.07, 0.2, darker) * (1.0 - smoothstep(0.5, 0.75, luma(c)));
 
   // Which windows have the lights on: stable per ~3 m cell of the real world.
   // (wrapped to small integers: Earth-sized coordinates break the hash precision)
   vec3 cell = mod(floor(world.xyz / 2.6), 4096.0);
   float on = step(hash13(cell), windowShare);
-  float cool = step(0.8, hash13(cell + 17.0));
-  vec3 tint = mix(vec3(1.0, 0.74, 0.42), vec3(0.78, 0.87, 1.0), cool);
-  float fade = (1.0 - smoothstep(350.0, 2400.0, dist) * 0.75) * (1.0 - smoothstep(1800.0, 3000.0, dist));
+  // Mostly warm interior light, a few cooler rooms; each window a little dimmer or brighter.
+  float cool = step(0.92, hash13(cell + 17.0));
+  vec3 tint = mix(vec3(1.0, 0.78, 0.5), vec3(0.86, 0.9, 1.0), cool) * (0.55 + 0.35 * hash13(cell + 41.0));
+  float fade = (1.0 - smoothstep(300.0, 1800.0, dist) * 0.8) * (1.0 - smoothstep(1500.0, 2600.0, dist));
   float glow = window * on * wall * fade * nightAmount;
   out_FragColor = vec4(tint * glow, 1.0);
 }
@@ -127,7 +128,8 @@ void main() {
   vec3 graded = mix(mix(c, dusk, duskAmount), night, nightAmount);
   vec3 sharp = texture(maskTexture, uv).rgb;
   vec3 halo = texture(blurTexture, uv).rgb;
-  out_FragColor = vec4(graded + sharp * 1.0 + halo * 1.7, 1.0);
+  // Soft and even: capped so no window blows out to white.
+  out_FragColor = vec4(graded + min(sharp * 0.6 + halo * 0.55, vec3(0.5)), 1.0);
 }
 `;
 
@@ -178,6 +180,8 @@ export class Realistic3D extends Emitter {
       shouldAnimate: true,
     });
     viewer.scene.skyAtmosphere.show = true;
+    // Very dense screens: render a bit below native resolution (much faster, hardly visible).
+    viewer.resolutionScale = Math.min(1, 1.5 / (window.devicePixelRatio || 1));
     viewer.scene.backgroundColor = Cesium.Color.BLACK;
     viewer.clock.currentTime = Cesium.JulianDate.now(); // real sun position
     viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
@@ -192,7 +196,15 @@ export class Realistic3D extends Emitter {
     if (!this.tilesetPromise) {
       this.tilesetPromise = (async () => {
         if (this.googleKey) Cesium.GoogleMaps.defaultApiKey = this.googleKey;
-        const tileset = await Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true }, { maximumScreenSpaceError: 12, showCreditsOnScreen: true });
+        const tileset = await Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true }, {
+          maximumScreenSpaceError: 16,
+          // Less detail toward the horizon, where it can't be seen anyway: much lighter.
+          dynamicScreenSpaceError: true,
+          dynamicScreenSpaceErrorDensity: 0.0004,
+          dynamicScreenSpaceErrorFactor: 6,
+          foveatedScreenSpaceError: true,
+          showCreditsOnScreen: true,
+        });
         if (this.tileset) this.viewer.scene.primitives.remove(this.tileset);
         this.tileset = this.viewer.scene.primitives.add(tileset);
         return tileset;
@@ -207,7 +219,7 @@ export class Realistic3D extends Emitter {
   _installGlow() {
     const Cesium = this.Cesium;
     const stages = this.viewer.scene.postProcessStages;
-    const uniforms = { nightAmount: 0, duskAmount: 0, windowShare: 0.27 };
+    const uniforms = { nightAmount: 0, duskAmount: 0, windowShare: 0.2 };
     this.glowUniforms = uniforms;
     const mask = new Cesium.PostProcessStage({
       name: 'sw_window_mask',
@@ -218,7 +230,7 @@ export class Realistic3D extends Emitter {
       },
     });
     const blur = Cesium.PostProcessStageLibrary.createBlurStage();
-    blur.uniforms.sigma = 3.2;
+    blur.uniforms.sigma = 2.2;
     blur.uniforms.stepSize = 1.6;
     const glow = new Cesium.PostProcessStageComposite({ name: 'sw_window_glow', stages: [mask, blur], inputPreviousStageTexture: true });
     const composite = new Cesium.PostProcessStage({
@@ -478,9 +490,14 @@ export class Realistic3D extends Emitter {
     const viewer = await this._init();
     await this._tileset();
     this.active = true;
-    this.container.classList.add('is-active');
     viewer.resize();
     await this.matchMap(mapCamera);
+    // Keep showing the map's buildings until the real 3D city has streamed in,
+    // then fade over to it (rather than showing the blurry half-loaded tiles).
+    const t0 = performance.now();
+    while (this.active && !this.tileset?.tilesLoaded && performance.now() - t0 < 6000) await new Promise((r) => setTimeout(r, 120));
+    if (!this.active) return;
+    this.container.classList.add('is-active');
     this._updateSun();
     this._sunTimer ||= setInterval(() => this._updateSun(), 60_000);
     this.emit('enter');
@@ -680,8 +697,8 @@ export class Realistic3D extends Emitter {
   }
 
   /**
-   * Floating text: owners' billboards (always) and neon shop/bar/restaurant
-   * signs where they really are (after dark).
+   * Floating text: owners' billboards (always, bright) and shop / bar /
+   * restaurant names where they really are (muted, up close).
    */
   setLabels({ billboards = [], signs = [] }) {
     if (!this.viewer) return;
@@ -702,20 +719,21 @@ export class Realistic3D extends Emitter {
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       });
     }
-    if (this.phase !== 'day') {
-      for (const s of signs.slice(0, 120)) {
-        this.labels.add({
-          position: Cesium.Cartesian3.fromDegrees(s.lng, s.lat, ground + 7),
-          text: s.name,
-          font: '700 15px Geist, system-ui, sans-serif',
-          fillColor: Cesium.Color.fromCssColorString('#fff8f0'),
-          outlineColor: Cesium.Color.fromCssColorString(s.color).withAlpha(0.95),
-          outlineWidth: 4,
-          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-          distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 900),
-        });
-      }
+    // Shop names where they really are: calm, muted labels (owners' billboards are what stand out).
+    for (const s of signs.slice(0, 80)) {
+      const c = Cesium.Color.fromCssColorString(s.color);
+      const soft = new Cesium.Color(c.red + (0.78 - c.red) * 0.55, c.green + (0.8 - c.green) * 0.55, c.blue + (0.84 - c.blue) * 0.55, 0.85);
+      this.labels.add({
+        position: Cesium.Cartesian3.fromDegrees(s.lng, s.lat, ground + 6),
+        text: s.name,
+        font: '500 13px Geist, system-ui, sans-serif',
+        fillColor: soft,
+        outlineColor: Cesium.Color.fromCssColorString('#080a10').withAlpha(0.8),
+        outlineWidth: 2,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 450),
+      });
     }
   }
 }

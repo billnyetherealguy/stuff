@@ -89,7 +89,14 @@ export const SIGN_CLASSES = {
   shop: NEON[2], clothing_store: NEON[2], alcohol_shop: NEON[1], jewelry: '#ffd166', mobile_phone: NEON[0],
   grocery: NEON[3], pharmacy: NEON[3], convenience: NEON[3], fuel: NEON[0], hairdresser: '#ff8ad8',
 };
-const SIGN_COLOR = ['match', ['get', 'class'], ...Object.entries(SIGN_CLASSES).flat(), NEON[2]];
+
+/** A sign color washed toward soft grey: shop names stay calm map labels, not billboards. */
+function muted(hex, amount = 0.55) {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const g = [196, 200, 212];
+  return `#${c.map((v, i) => Math.round(v + (g[i] - v) * amount).toString(16).padStart(2, '0')).join('')}`;
+}
+const SHOP_LABEL_COLOR = ['match', ['get', 'class'], ...Object.entries(SIGN_CLASSES).flatMap(([k, v]) => [k, muted(v)]), muted(NEON[2])];
 
 export const CLOSE_UP_ZOOM = 16; // buildings switch to lit, windowed facades here
 
@@ -355,8 +362,9 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
             250,
             P.buildingHigh,
           ],
-          'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 14.8, ['coalesce', ['get', 'render_height'], 5]],
-          'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 14.8, ['coalesce', ['get', 'render_min_height'], 0]],
+          // The city rises into 3D as you zoom in.
+          'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.8, ['coalesce', ['get', 'render_height'], 5]],
+          'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.8, ['coalesce', ['get', 'render_min_height'], 0]],
           'fill-extrusion-opacity': 0.94,
           'fill-extrusion-vertical-gradient': true,
         },
@@ -386,29 +394,28 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
       },
 
       {
-        // Neon signs: shops, bars, restaurants, cinemas, hotels… glow where they
-        // really are. Brightness follows the real sun (map.js daylight).
+        // Shops, bars, restaurants, cinemas, hotels… named where they really are,
+        // up close only, in calm muted colors (owners' billboards are what glow).
         id: 'poi-neon',
         type: 'symbol',
         source: 'omt',
         'source-layer': 'poi',
-        minzoom: 15.4,
+        minzoom: 16.6,
         filter: ['all', ['has', 'name'], ['match', ['get', 'class'], Object.keys(SIGN_CLASSES), true, false]],
         layout: {
           'text-field': NAME,
-          'text-font': BOLD,
-          'text-size': ['interpolate', ['linear'], ['zoom'], 15.4, 10, 18, 15],
+          'text-font': REGULAR,
+          'text-size': ['interpolate', ['linear'], ['zoom'], 16.6, 10, 19, 13],
           'text-max-width': 8,
-          'text-letter-spacing': 0.05,
-          'text-padding': 3,
+          'text-padding': 6,
           'symbol-sort-key': ['coalesce', ['get', 'rank'], 99],
         },
         paint: {
-          'text-color': '#fff8f0', // white-hot tube, colored glow around it
-          'text-halo-color': SIGN_COLOR,
-          'text-halo-width': 2.2,
-          'text-halo-blur': 2.4,
-          'text-opacity': ['interpolate', ['linear'], ['zoom'], 15.4, 0, 16, 1],
+          'text-color': SHOP_LABEL_COLOR,
+          'text-halo-color': 'rgba(8, 10, 16, 0.85)',
+          'text-halo-width': 1.2,
+          'text-halo-blur': 0.4,
+          'text-opacity': ['interpolate', ['linear'], ['zoom'], 16.6, 0, 17.1, 0.85],
         },
       },
       {

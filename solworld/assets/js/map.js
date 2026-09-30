@@ -12,7 +12,7 @@ import { SIGN_COLORS } from './registry.js';
 import {
   inflatePolygon,
   interiorPoint,
-  pickPartOnRay,
+  pickOnRay,
   pointInPolygon,
   polygonsOf,
 } from './geo.js';
@@ -82,7 +82,10 @@ export class MapController extends Emitter {
       bearing: start?.bearing ?? 0,
       minZoom: 0.6,
       maxZoom: 19.2,
-      maxPitch: 72,
+      // Tilting all the way to the horizon draws kilometres of buildings: stop a bit short.
+      maxPitch: 65,
+      // 3× phone screens: 2× is plenty and much lighter.
+      pixelRatio: Math.min(globalThis.devicePixelRatio || 1, 2),
       attributionControl: false,
       canvasContextAttributes: { antialias: true },
       fadeDuration: 220,
@@ -173,6 +176,24 @@ export class MapController extends Emitter {
           'fill-extrusion-base': ['get', 'base'],
           'fill-extrusion-opacity': 1,
           'fill-extrusion-vertical-gradient': true,
+        },
+      },
+      labelsFrom,
+    );
+    // A glowing translucent box just around the hovered / selected building,
+    // so which one it is stays obvious up close too (even wearing its photo).
+    m.addLayer(
+      {
+        id: 'sw-shell-halo',
+        type: 'fill-extrusion',
+        source: 'sw-shells',
+        minzoom: BUILDING_MIN_ZOOM,
+        filter: ['==', ['get', 'kind'], 'halo'],
+        paint: {
+          'fill-extrusion-color': ['match', ['get', 'tone'], 'mine', COLORS.mine, 'owned', COLORS.owned, 'hover', '#b9c8ff', '#9fd8ff'],
+          'fill-extrusion-height': ['get', 'top'],
+          'fill-extrusion-base': ['get', 'base'],
+          'fill-extrusion-opacity': ['interpolate', ['linear'], ['zoom'], 15, 0.18, 17, 0.32],
         },
       },
       labelsFrom,
@@ -441,10 +462,11 @@ export class MapController extends Emitter {
     paint('satellite', 'raster-brightness-max', sat[0]);
     paint('satellite', 'raster-saturation', sat[1]);
     paint('satellite', 'raster-opacity', ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, sat[2]]);
-    // Signs are switched off in daylight, glow at dusk and full at night.
+    // Headlights only after dark.
     paint('sw-headlights', 'circle-opacity', { day: 0, dusk: 0.6, night: 0.9 }[phase]);
-    const neon = { day: 0, dusk: 0.8, night: 1 }[phase];
-    paint('poi-neon', 'text-opacity', ['interpolate', ['linear'], ['zoom'], 15.4, 0, 16, neon]);
+    // Shop names: calm labels up close, a touch dimmer at night so they don't shout.
+    const shops = { day: 0.85, dusk: 0.8, night: 0.72 }[phase];
+    paint('poi-neon', 'text-opacity', ['interpolate', ['linear'], ['zoom'], 16.6, 0, 17.1, shops]);
     const blocks = { day: ['#4d525b', '#5d626c', '#6f7580'], dusk: ['#2a2527', '#342d2f', '#40383a'], night: ['#16181d', '#1c1f25', '#232730'] }[phase];
     paint('building-3d', 'fill-extrusion-color', ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 5], 0, blocks[0], 80, blocks[1], 250, blocks[2]]);
     const sky = {
@@ -520,45 +542,47 @@ export class MapController extends Emitter {
     };
   }
 
-  /** The single building footprint under a screen point, or null. */
+  /**
+   * The single building footprint under a screen point, or null: of all the
+   * 3D buildings under the cursor, the one the camera actually sees (the first
+   * one along the line of sight), so tall and close-up views pick right.
+   * `reach` (px): a near miss still picks the closest building.
+   */
   pickAt(point, lngLat, { reach = 0 } = {}) {
     if (!this.ready || this.map.getZoom() < BUILDING_MIN_ZOOM) return null;
     const ground = [lngLat.lng, lngLat.lat];
-    let feature = this.map.queryRenderedFeatures(point, { layers: ['building-facade', 'building-3d'] })[0];
-    if (!feature) feature = this.map.queryRenderedFeatures(point, { layers: ['building-pick'] })[0];
-    let near = false;
-    if (!feature && reach) {
+    const toCandidates = (features) =>
+      features.flatMap((f) => {
+        const parts = polygonsOf(f.geometry);
+        const top = Number(f.properties?.render_height ?? 5);
+        const base = Number(f.properties?.render_min_height ?? 0);
+        return parts.map((part) => ({ part, top, base, feature: f, alone: parts.length === 1 }));
+      });
+    let hit = pickOnRay(toCandidates(this.map.queryRenderedFeatures(point, { layers: ['building-facade', 'building-3d'] })), ground, this.cameraInfo());
+    if (!hit) hit = toCandidates(this.map.queryRenderedFeatures(point, { layers: ['building-pick'] })).find((c) => pointInPolygon(ground, c.part)) || null;
+    if (!hit && reach) {
       // Just missed (a street, a gap, a fat finger): take the closest building nearby.
       const box = [
         [point.x - reach, point.y - reach],
         [point.x + reach, point.y + reach],
       ];
       let best = Infinity;
-      for (const f of this.map.queryRenderedFeatures(box, { layers: ['building-facade', 'building-3d', 'building-pick'] })) {
-        for (const p of polygonsOf(f.geometry)) {
-          const d = distanceToRing(ground, p[0]);
-          if (d < best) {
-            best = d;
-            feature = f;
-          }
+      for (const c of toCandidates(this.map.queryRenderedFeatures(box, { layers: ['building-facade', 'building-3d', 'building-pick'] }))) {
+        const d = distanceToRing(ground, c.part[0]);
+        if (d < best) {
+          best = d;
+          hit = c;
         }
       }
-      near = !!feature;
     }
-    if (!feature) return null;
-    const parts = polygonsOf(feature.geometry);
-    if (!parts.length) return null;
-    const top = Number(feature.properties?.render_height ?? 5);
-    const base = Number(feature.properties?.render_min_height ?? 0);
-    let part = near ? null : pickPartOnRay(parts, ground, this.cameraInfo(), top, base);
-    if (!part) part = parts.reduce((a, b) => (distanceToRing(ground, a[0]) <= distanceToRing(ground, b[0]) ? a : b));
-    if (!part) return null;
+    if (!hit) return null;
+    const { part, top, base, feature, alone } = hit;
     return {
       part,
       point: pointInPolygon(ground, part) ? ground : interiorPoint(part),
       top,
       base,
-      tileKey: parts.length === 1 ? keyFromTileId(feature.id) : null,
+      tileKey: alone ? keyFromTileId(feature.id) : null,
     };
   }
 
@@ -813,11 +837,26 @@ export class MapController extends Emitter {
   _renderShells() {
     if (!this.ready) return;
     const features = (this.shells || []).map((s) => this._shellFeature(s));
+    // Halo around the selected building…
+    for (const sh of this.shells || []) if (sh.kind === 'selected') features.push(this._haloFeature(sh, sh.tone || 'available'));
     if (this.hover && this.map.getZoom() >= BUILDING_MIN_ZOOM) {
       const covered = (this.shells || []).some((s) => pointInPolygon(this.hover.point, s.part));
       if (!covered) features.push(this._shellFeature({ ...this.hover, kind: 'hover' }));
+      // … and around the one under the pointer (when it isn't the selected one).
+      const isSelected = (this.shells || []).some((s) => s.kind === 'selected' && pointInPolygon(this.hover.point, s.part));
+      if (!isSelected) features.push(this._haloFeature(this.hover, 'hover'));
     }
     this.map.getSource('sw-shells').setData({ type: 'FeatureCollection', features });
+  }
+
+  /** A slightly bigger translucent box around a building. */
+  _haloFeature({ part, top, base }, tone) {
+    const pad = Math.max(0.8, Math.min(2.5, 0.35 * 2 ** (this.map.getZoom() - 15)));
+    return {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: inflatePolygon(part, pad) },
+      properties: { kind: 'halo', tone, top: top + pad, base: Math.max(0, base - 0.3) },
+    };
   }
 
   _shellFeature({ part, top, base, kind, tone }) {

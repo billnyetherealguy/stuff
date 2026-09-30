@@ -1,7 +1,7 @@
 // Geometry used for picking and highlights.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inflatePolygon, interiorPoint, pickPartOnRay, pointInPolygon, polygonAreaM2 } from '../../solworld/assets/js/geo.js';
+import { inflatePolygon, interiorPoint, pickOnRay, pickPartOnRay, pointInPolygon, polygonAreaM2 } from '../../solworld/assets/js/geo.js';
 import { assembleRings, elementPolygons, buildingHeights } from '../../solworld/assets/js/osm.js';
 
 const M = 1 / 111_320; // ~1 m in degrees near the equator
@@ -78,4 +78,16 @@ test('street life: packed in big cities, a few in towns, none in the middle of n
   assert.ok(suburb.cars < dc.cars / 3, JSON.stringify(suburb));
   assert.deepEqual([nowhere.cars, nowhere.people], [0, 0]);
   assert.ok(streetLife(-73.9857, 40.7484, { night: true }).people < nyc.people);
+});
+
+test('the building you point at is the one the camera sees, not one behind it', () => {
+  const N = 1 / 110_574; // ~1 m north in degrees
+  const box = (y0, y1) => [[[-10 * M, y0 * N], [10 * M, y0 * N], [10 * M, y1 * N], [-10 * M, y1 * N], [-10 * M, y0 * N]]];
+  const tall = { name: 'tall', part: box(60, 100), top: 60, base: 0 };
+  const small = { name: 'small', part: box(190, 210), top: 5, base: 0 };
+  const camera = { lngLat: [0, 0], altitude: 100 };
+  // The cursor ray reaches the ground at the small building 200 m away, but passes through the tall one first.
+  assert.equal(pickOnRay([small, tall], [0, 200 * N], camera).name, 'tall');
+  // Aim just past the tall one's roof: now the small building behind it is what's seen.
+  assert.equal(pickOnRay([small, tall], [0, 205 * N], { lngLat: [0, 150 * N], altitude: 30 }).name, 'small');
 });

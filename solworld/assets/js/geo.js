@@ -196,6 +196,30 @@ export function pickPartOnRay(parts, ground, camera, top, base = 0) {
   return best?.part || null;
 }
 
+/**
+ * Of several extruded footprints under the cursor, the one the camera actually
+ * sees: walks down the line of sight from the highest roof to the ground and
+ * returns the first footprint the ray is inside (between its base and roof).
+ *
+ * @param candidates [{ part, top, base, ... }] footprints under the cursor
+ * @param ground     [lng, lat] where the cursor ray meets the ground
+ * @param camera     { lngLat: [lng, lat], altitude } of the camera (meters)
+ */
+export function pickOnRay(candidates, ground, camera) {
+  if (!candidates.length) return null;
+  if (camera && camera.altitude > 1) {
+    const high = Math.max(...candidates.map((c) => c.top));
+    const steps = Math.max(12, Math.ceil(high / 0.75));
+    for (let s = 0; s <= steps; s++) {
+      const z = high - (high * s) / steps;
+      const t = Math.min(1, z / camera.altitude);
+      const p = [ground[0] + (camera.lngLat[0] - ground[0]) * t, ground[1] + (camera.lngLat[1] - ground[1]) * t];
+      for (const c of candidates) if (z <= c.top + 0.01 && z >= c.base - 0.01 && pointInPolygon(p, c.part)) return c;
+    }
+  }
+  return candidates.find((c) => pointInPolygon(ground, c.part)) || null;
+}
+
 /* ----------------------------------------------------- web mercator pixels */
 
 export function lngLatToWorldPx([lng, lat], zoom) {

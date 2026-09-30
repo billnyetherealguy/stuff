@@ -51,6 +51,8 @@ Up close, Solworld switches to **Google's Photorealistic 3D Tiles**: the same re
 2. **APIs & Services → Library**: enable **Map Tiles API** (realistic 3D) and **Maps JavaScript API** (walking the street inside the site).
 3. **APIs & Services → Credentials → Create credentials → API key**. Under **Application restrictions**, choose **Websites** and add your site (e.g. `https://yoursite.netlify.app/*`). Under **API restrictions**, allow only those two APIs.
 4. On your site, open **`/#/operator`**, paste the key under **Realistic 3D**, tap **Save key**, and approve with your treasury wallet. (Or put it in `config.js` → `realistic3d.googleKey`.)
+**No card? Use Cesium ion instead (free):** sign up at [ion.cesium.com](https://ion.cesium.com), open **Asset Depot**, add **Google Photorealistic 3D Tiles** to your assets, then copy a token from **Access Tokens** into `config.js` → `realistic3d.cesiumIonToken` and redeploy. You get the same real 3D city. Walking the street inside the site still needs a Google key; without one, that button shows a message instead. Check Cesium ion's terms for your use.
+
 5. Tap **Test key** there. It checks both APIs from your live site and says exactly what's wrong if one fails (API not enabled, website not allowed, billing off).
 
 **Walk the street without leaving the site:** tap **Street View** on any building, or **Walk here** while zoomed in. The camera swoops down and Google Street View opens full screen inside Solworld, pointed at the building. It shows the real sidewalks (cracks and all), trees, parked cars and storefronts. The building's own poster (For sale / Owned / its billboard) and nearby owners' billboards stand in the street, and tapping one opens that building. **Back up** returns to the map.

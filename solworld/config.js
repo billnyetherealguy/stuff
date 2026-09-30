@@ -42,8 +42,14 @@ window.SOLWORLD_CONFIG = {
   // Realistic 3D close-ups (real buildings with real textures, like Google
   // Earth). Paste a Google Maps Platform key with the "Map Tiles API" enabled,
   // restricted to your website. You can also set it in /#/operator instead.
+  //
+  // No Google billing? Use a free Cesium ion token instead (no card needed):
+  // sign up at https://ion.cesium.com, add "Google Photorealistic 3D Tiles"
+  // from the Asset Depot to your assets, then copy a token from
+  // "Access Tokens" and paste it below. Leave googleKey empty.
   realistic3d: {
     googleKey: "",
+    cesiumIonToken: "",
   },
 
   // Optional: your own Solana RPC endpoint(s), tried in order. The public

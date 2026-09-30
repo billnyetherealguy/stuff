@@ -362,10 +362,45 @@ async function demo(env) {
       assert.ok(await page.evaluate((a) => window.solworld.registry.state.owners.get(a)?.count >= 2, me));
     });
 
+    await step('demo: set a display name instead of the wallet address', async () => {
+      await closePanel(page);
+      await openWalletMenu(page);
+      await page.getByRole('menuitem', { name: /Set your name/ }).click();
+      await page.locator('.modal .field-input').fill('Big Bill');
+      await page.getByRole('button', { name: 'Save name' }).click();
+      await page.waitForFunction(() => window.solworld.registry.state.names.get(window.solworld.wallet.address) === 'Big Bill', null, { timeout: 15_000 });
+    });
+
+    await step('demo: city takeover — drag to select land, name it, buy it', async () => {
+      await closePanel(page);
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9905, 40.7418], zoom: 16.2, pitch: 0, bearing: 0 }));
+      await page.evaluate(() => window.solworld.map.settled());
+      await page.getByRole('button', { name: 'Take over' }).click();
+      await page.mouse.move(560, 330);
+      await page.mouse.down();
+      await page.mouse.move(700, 430, { steps: 6 });
+      await page.mouse.move(820, 560, { steps: 6 });
+      await page.mouse.up();
+      await page.waitForSelector('.takeover-quote', { timeout: 10_000 });
+      const tier = await page.locator('.takeover-tier b').innerText();
+      assert.match(tier, /Block|Neighborhood|Town|City/);
+      await page.locator('.takeover-quote .field-input').fill('Bill Heights');
+      await shot(page, '46-takeover-quote');
+      await page.locator('.takeover-buy').click();
+      await page.waitForFunction(() => window.solworld.registry.state.territories.some((t) => t.title === 'Bill Heights'), null, { timeout: 20_000 });
+      await page.waitForTimeout(1500);
+      await page.waitForFunction(() => !window.solworld.map.map.isMoving(), null, { timeout: 30_000 }); // the fly-to over the new land
+      await page.evaluate(() => window.solworld.map.settled());
+      await shot(page, '47-takeover-founded');
+      const t = await page.evaluate(() => window.solworld.registry.state.territories.find((x) => x.title === 'Bill Heights'));
+      assert.equal(t.owner, await page.evaluate(() => window.solworld.wallet.address));
+    });
+
     await step('demo: with OpenStreetMap servers down, buildings still open and can be bought', async () => {
       harness.setOverpassDown(true);
       await closePanel(page);
-      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9931, 40.7392], zoom: 16.4, pitch: 0 }));
+      // Well away from the land taken over above (everything in there is owned).
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9835, 40.7525], zoom: 16.4, pitch: 0, bearing: 0 }));
       await page.evaluate(() => window.solworld.map.settled());
       await openAvailable(page, [[0.0011, 0.0004], [-0.0012, -0.0006], [0.0016, -0.0009], [-0.002, 0.0012], [0.0005, 0.0019]]);
       const key = await page.evaluate(() => location.hash.split('/').pop());

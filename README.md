@@ -23,7 +23,7 @@ Your wallet is already in place:
 treasury: "8tiwEgFFPdkMRhPMZtxHRwvopwf1PeqzgMpVMq7GKkpV",
 ```
 
-Every building purchase, and 5% of every resale between players (`marketFeePercent`), is paid straight to this wallet.
+Every building purchase, every land takeover, and a 1% tax on every resale between players (`marketFeePercent`), is paid straight to this wallet.
 
 > **Never put a private key or seed phrase in this file.** Everyone can read it. Solworld refuses to start if it spots a private key there.
 
@@ -51,6 +51,7 @@ Up close, Solworld switches to **Google's Photorealistic 3D Tiles**: the same re
 2. **APIs & Services → Library**: enable **Map Tiles API** (realistic 3D) and **Maps JavaScript API** (walking the street inside the site).
 3. **APIs & Services → Credentials → Create credentials → API key**. Under **Application restrictions**, choose **Websites** and add your site (e.g. `https://yoursite.netlify.app/*`). Under **API restrictions**, allow only those two APIs.
 4. On your site, open **`/#/operator`**, paste the key under **Realistic 3D**, tap **Save key**, and approve with your treasury wallet. (Or put it in `config.js` → `realistic3d.googleKey`.)
+5. Tap **Test key** there. It checks both APIs from your live site and says exactly what's wrong if one fails (API not enabled, website not allowed, billing off).
 
 **Walk the street without leaving the site:** tap **Street View** on any building, or **Walk here** while zoomed in. The camera swoops down and Google Street View opens full screen inside Solworld, pointed at the building. It shows the real sidewalks (cracks and all), trees, parked cars and storefronts. The building's own poster (For sale / Owned / its billboard) and nearby owners' billboards stand in the street, and tapping one opens that building. **Back up** returns to the map.
 
@@ -103,14 +104,33 @@ The result is capped at **3 SOL**. A shed in the countryside costs 0.001 SOL, wh
 ### Buying, selling, offers
 
 - **Buy:** one transaction pays the building's price to your treasury, with a memo naming the building (e.g. `solworld:buy:w34633854@40.748440,-73.985664;p=3000000000`).
-- **Offers:** on a building someone owns, anyone can make an offer. The offer is a fully **pre-signed sale**: the buyer signs a transaction that pays the owner (minus the 5% fee) and pays you the fee, and publishes it.
+- **Offers:** on a building someone owns, anyone can make an offer. The offer is a fully **pre-signed sale**: the buyer signs a transaction that pays the owner (minus the 1% tax) and pays you the tax, and publishes it.
 - **Accept:** the owner taps *Accept*. Their Solworld wallet co-signs and sends it, and the SOL and the building swap **atomically in one transaction**. Nobody can take the SOL without handing over the building, or the reverse.
 - **Safety:** each building has a small on-chain "nonce" account controlled by its current owner. A sale advances it, which invalidates every other outstanding offer on that building, and hands control to the new owner. The first offer on a building pays ~0.0015 SOL of rent to set it up.
 - Offers stay valid while the buyer keeps enough SOL in their wallet. *Cancel* hides an offer everywhere. A buyer who wants to be 100% sure an old offer can never execute can keep their balance below the offer amount.
 
 ### Billboards (what owning a building is for)
 
-Owners can put up a billboard: a short message (up to 60 characters) in one of 8 colors. It glows above the building on the map for every visitor and shows in the building's panel. Use it for a name, a brand or a $TICKER. It's recorded on-chain and changes hands with the building.
+Owners can put up a billboard: a short message (up to 60 characters) in one of 8 colors. It glows above the building on the map for every visitor, stands on a lit board on the sidewalk out front when you're zoomed into the street, appears as a poster in Street View, and shows in the building's panel. Use it for a name, a brand or a $TICKER. It's recorded on-chain and changes hands with the building.
+
+### Names instead of wallets
+
+Anyone can pick a display name (**Wallet → Set your name**). It's saved on-chain and shown instead of their wallet address everywhere: leaderboard, activity, owner cards, territories. Names are first come, first served (not case-sensitive), and names that look like a wallet address are refused.
+
+### City takeover
+
+Tap **Take over**, then drag across the map to select land. Solworld counts the buildings inside (exactly when they're on screen, estimated from how built-up the area is when zoomed out), and tells you what you'd found:
+
+| Buildings | You found a |
+| --- | --- |
+| 5–49 | Neighborhood |
+| 50–199 | Town |
+| 200–1,999 | City |
+| 2,000–19,999 | Mega city |
+| 20,000–199,999 | State |
+| 200,000+ | Country |
+
+Name it and tap **Take over**. One payment to your treasury buys every unowned building in the area. The land glows in the owner's color with its name on the map for everyone, and nobody else can buy a building inside it. Buildings already owned there stay with their owners. The price is deterministic (area × how busy the place is), so every browser can check it.
 
 ### Rules everyone's browser applies
 
@@ -123,6 +143,8 @@ Each visitor's browser reads the Solworld transactions from Solana and applies t
 | Credit | Only with a verified holder wallet, and only up to that wallet's coin balance **recorded in the transaction itself** × your `solPerToken`. |
 | Sales | Must be co-signed by the current owner and pay them the price minus the fee, plus the fee to you. |
 | Billboards | Only the current owner's billboard counts. |
+| Names | First to claim a name keeps it. |
+| Land | Must pay the area's price, must not overlap existing land, at most 8° on a side. Buildings inside can't be bought separately. |
 
 ### Operator tools
 
@@ -140,6 +162,7 @@ It also shows totals: revenue, volume, buildings, owners and sales.
 - **The real sun:** lighting follows the sun's actual position at the place you're looking at, right now. By day, the light comes from where the sun is, glass reflects the sky and the satellite ground is bright. At golden hour everything turns warm. At night, walls go dark, some windows light up with a soft glow, and neon signs glow where real ones are: bars, restaurants, shops, cinemas, theatres and hotels from OpenStreetMap, each in its own color.
 - **Photos match the time of day:** after dark, a building shows a night photo when one exists (Wikidata "nighttime view" or Wikimedia Commons), with a soft bloom so the lit windows glow. The satellite close-up is graded to night with glowing windows. A chip shows whether it's day, golden hour or night there now.
 - **Real photos on the buildings:** when you open a building that has a real photo, the 3D building is wrapped in that photo. After dark, the lit windows glow: night photos get a soft bloom, and day photos are darkened with warm window lights added.
+- **3D streets:** zoomed in, the streets are built in 3D from the real road network: textured asphalt with lane markings, raised sidewalks with slabs, joints and cracks, and trees along the sidewalks and all through parks and woods.
 - **Street life:** simulated cars (sedans, SUVs, yellow cabs in big cities, vans, buses, all with working head- and taillights) drive the real roads and people walk the sidewalks and footpaths, both on the map and in realistic 3D. How many depends on how busy the place is in real life: packed in Midtown Manhattan or downtown DC, a handful in suburbs and towns, none in the countryside. Fewer people are out at night, and cars show headlights and taillights after dark.
 - **Every building loads:** building lookups ask several OpenStreetMap servers at once and take the first answer, and buildings around where you're looking load in the background. If the servers are down or slow, the building still opens straight from the map and stays buyable, identified by its footprint (`g…` keys). Searching a street address opens the house at that address.
 - **Buildings:** every building in [OpenStreetMap](https://www.openstreetmap.org), identified by its OSM element (`w…`/`r…`). Clicks are resolved to the exact building with the [Overpass API](https://overpass-api.de), including a 3D ray test.
@@ -177,6 +200,8 @@ solworld/                 the website (deploy this folder)
   assets/js/realistic3d.js  real 3D view (CesiumJS + Google 3D Tiles), night window-glow shader
   assets/js/traffic.js    simulated cars and people, density by how busy the place is
   assets/js/streetview.js drop into the street: in-site Google Street View with posters
+  assets/js/streetscape.js  3D asphalt, sidewalks, markings, trees, street billboards
+  assets/js/ui/takeover.js  city takeover: select land, see its tier and price, buy it
   assets/models/          our own CC0 3D cars and walking people (test/tools/build-models.mjs)
   assets/js/sun.js        real sun position (lighting, day/night)
   assets/js/ui/           panel, wallet, leaderboard, search, modals

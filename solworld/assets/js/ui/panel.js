@@ -193,7 +193,12 @@ export class BuildingPanel {
   }
 
   record() {
-    return this.state?.key ? this.ctx.registry.state.buildings.get(this.state.key) : null;
+    if (!this.state?.key) return null;
+    const rec = this.ctx.registry.state.buildings.get(this.state.key);
+    if (rec) return rec;
+    // Not owned on its own, but inside someone's takeover: it's theirs.
+    const land = this.state.center && this.ctx.territoryAt(this.state.center);
+    return land ? { owner: land.owner, acquired: 'land', territory: land, price: 0, time: land.time, sig: land.sig } : null;
   }
 
   tone() {
@@ -336,8 +341,9 @@ export class BuildingPanel {
     }
     const mine = rec.owner === wallet.address;
     const holder = registry.state.owners.get(rec.owner);
-    const acquired =
-      rec.acquired === 'hold'
+    const acquired = rec.territory
+      ? `Part of ${rec.territory.title || 'their land'} · a ${rec.territory.tier.toLowerCase()} founded ${timeAgo(rec.time)}`
+      : rec.acquired === 'hold'
         ? `Taken with holder credit ${timeAgo(rec.time)} · ${fmtSol(rec.price)} SOL value`
         : rec.acquired === 'sale'
           ? `Bought from another owner ${timeAgo(rec.time)} for ${fmtSol(rec.price)} SOL`
@@ -480,7 +486,13 @@ export class BuildingPanel {
       nodes.push(h('button', { class: 'btn btn--primary btn--block is-busy', disabled: true }, h('span', { class: 'spinner' }), STAGES[this.busy] || 'Working…'));
     } else {
       const rec = this.record();
-      if (rec && rec.owner === wallet.address) {
+      if (rec?.territory) {
+        const t = rec.territory;
+        nodes.push(
+          h('div', { class: `owned-banner${rec.owner === wallet.address ? ' owned-banner--mine' : ''}` }, h('span', { svg: icon('trophy', { size: 16 }) }), `${t.title || 'Territory'} · ${t.tier}`),
+          h('p', { class: 'foot-note' }, rec.owner === wallet.address ? `Part of your ${t.tier.toLowerCase()} (${fmtInt(t.count)} buildings).` : `Owned by ${who(t.owner)} as part of their ${t.tier.toLowerCase()} of ${fmtInt(t.count)} buildings.`),
+        );
+      } else if (rec && rec.owner === wallet.address) {
         nodes.push(
           h('div', { class: 'owned-banner owned-banner--mine' }, h('span', { svg: icon('sparkle', { size: 16 }) }), 'You own this building'),
           this.signEditor(rec),

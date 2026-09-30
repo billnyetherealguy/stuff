@@ -7,6 +7,7 @@ import { buildStyle } from './mapstyle.js';
 import { FACADE_IDS, facadeImage } from './facade.js';
 import { sunPosition } from './sun.js';
 import { agentFootprint } from './traffic.js';
+import { asphaltImage, sidewalkImage } from './streetscape.js';
 import { SIGN_COLORS } from './registry.js';
 import {
   inflatePolygon,
@@ -91,6 +92,8 @@ export class MapController extends Emitter {
     // Facade patterns are drawn on demand, the first time a tile needs one.
     this.map.setMissingStyleImageResolver(async (id) => {
       if (FACADE_IDS.includes(id) && !this.map.hasImage(id)) this.map.addImage(id, facadeImage(id, this.phase || 'night'), { pixelRatio: 4 });
+      else if (id === 'sw-asphalt' && !this.map.hasImage(id)) this.map.addImage(id, asphaltImage(this.phase || 'day'), { pixelRatio: 4 });
+      else if (id === 'sw-sidewalk' && !this.map.hasImage(id)) this.map.addImage(id, sidewalkImage(this.phase || 'day'), { pixelRatio: 6 });
       else if (id === 'sw-skin' && this.skin && !this.map.hasImage(id)) this.map.addImage(id, this.skin.image, { pixelRatio: 1 });
     });
     this.map.on('load', () => this._onLoad());
@@ -210,6 +213,71 @@ export class MapController extends Emitter {
         'circle-pitch-alignment': 'map',
       },
     });
+    // The street up close (streetscape.js): asphalt, raised sidewalks, lane markings, trees.
+    m.addSource('sw-surfaces', { type: 'geojson', data: EMPTY });
+    m.addSource('sw-markings', { type: 'geojson', data: EMPTY });
+    m.addSource('sw-trees', { type: 'geojson', data: EMPTY });
+    m.addSource('sw-street-signs', { type: 'geojson', data: EMPTY });
+    const fadeIn = ['interpolate', ['linear'], ['zoom'], 15.8, 0, 16.4, 1];
+    m.addLayer({ id: 'sw-asphalt', type: 'fill-extrusion', source: 'sw-surfaces', minzoom: 15.8, filter: ['==', ['get', 'kind'], 'asphalt'], paint: { 'fill-extrusion-pattern': 'sw-asphalt', 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-base': 0, 'fill-extrusion-opacity': fadeIn } }, 'building-2d');
+    m.addLayer({ id: 'sw-sidewalk', type: 'fill-extrusion', source: 'sw-surfaces', minzoom: 15.8, filter: ['==', ['get', 'kind'], 'sidewalk'], paint: { 'fill-extrusion-pattern': 'sw-sidewalk', 'fill-extrusion-height': ['get', 'h'], 'fill-extrusion-base': 0, 'fill-extrusion-opacity': fadeIn } }, 'building-2d');
+    m.addLayer(
+      {
+        id: 'sw-markings',
+        type: 'line',
+        source: 'sw-markings',
+        minzoom: 16.3,
+        layout: { 'line-cap': 'butt' },
+        paint: {
+          'line-color': ['match', ['get', 'kind'], 'center', '#f2c94c', '#f4f4f0'],
+          'line-width': ['interpolate', ['exponential', 2], ['zoom'], 16.3, 0.6, 19, 3.2],
+          'line-dasharray': ['match', ['get', 'kind'], 'center', ['literal', [1, 0]], ['literal', [3, 5]]],
+          'line-opacity': ['interpolate', ['linear'], ['zoom'], 16.3, 0, 16.8, 0.85],
+        },
+      },
+      'building-2d',
+    );
+    m.addLayer({
+      id: 'sw-trees',
+      type: 'fill-extrusion',
+      source: 'sw-trees',
+      minzoom: 15.8,
+      paint: {
+        'fill-extrusion-color': ['get', 'color'],
+        'fill-extrusion-base': ['get', 'base'],
+        'fill-extrusion-height': ['get', 'top'],
+        'fill-extrusion-opacity': fadeIn,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    }, labelsFrom);
+    // Owners' billboards at street level, on the boards built in sw-trees.
+    m.addLayer({
+      id: 'sw-street-signs',
+      type: 'symbol',
+      source: 'sw-street-signs',
+      minzoom: 15.8,
+      layout: {
+        'text-field': ['get', 'text'],
+        'text-font': ['Noto Sans Bold'],
+        'text-size': ['interpolate', ['exponential', 2], ['zoom'], 16, 9, 19, 22],
+        'text-max-width': 8,
+        'text-anchor': 'bottom',
+        'text-offset': [0, -1.2],
+        'text-allow-overlap': true,
+        'text-pitch-alignment': 'viewport',
+      },
+      paint: { 'text-color': '#ffffff', 'text-halo-color': ['get', 'color'], 'text-halo-width': 2.2, 'text-halo-blur': 1, 'text-opacity': ['interpolate', ['linear'], ['zoom'], 16.3, 0, 16.9, 1] },
+    });
+
+    // City takeovers: owned land glows in its owner's color, with its name.
+    m.addSource('sw-lands', { type: 'geojson', data: EMPTY });
+    m.addSource('sw-draft', { type: 'geojson', data: EMPTY });
+    m.addLayer({ id: 'sw-land-fill', type: 'fill', source: 'sw-lands', paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['interpolate', ['linear'], ['zoom'], 3, 0.18, 14, 0.07] } }, 'building-2d');
+    m.addLayer({ id: 'sw-land-glow', type: 'line', source: 'sw-lands', paint: { 'line-color': ['get', 'color'], 'line-width': 7, 'line-blur': 6, 'line-opacity': 0.5 } }, 'building-2d');
+    m.addLayer({ id: 'sw-land-line', type: 'line', source: 'sw-lands', paint: { 'line-color': ['get', 'color'], 'line-width': 1.6, 'line-dasharray': [3, 2] } }, 'building-2d');
+    m.addLayer({ id: 'sw-draft-fill', type: 'fill', source: 'sw-draft', paint: { 'fill-color': ['case', ['==', ['get', 'state'], 'bad'], '#ff6b6b', '#2af5a8'], 'fill-opacity': 0.16 } });
+    m.addLayer({ id: 'sw-draft-line', type: 'line', source: 'sw-draft', paint: { 'line-color': ['case', ['==', ['get', 'state'], 'bad'], '#ff6b6b', '#2af5a8'], 'line-width': 2.2 } });
+
     // Street life (traffic.js): cars and people as small 3D shapes, headlights after dark.
     m.addSource('sw-agents', { type: 'geojson', data: EMPTY });
     m.addSource('sw-lights', { type: 'geojson', data: EMPTY });
@@ -249,6 +317,21 @@ export class MapController extends Emitter {
       labelsFrom,
     );
 
+    m.addLayer({
+      id: 'sw-land-label',
+      type: 'symbol',
+      source: 'sw-lands',
+      layout: {
+        'text-field': ['format', ['get', 'title'], { 'font-scale': 1 }, '\n', {}, ['upcase', ['get', 'tier']], { 'font-scale': 0.62 }],
+        'text-font': ['Noto Sans Bold'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 3, 11, 10, 15, 16, 20],
+        'text-letter-spacing': 0.04,
+        'text-max-width': 12,
+        'symbol-placement': 'point',
+      },
+      paint: { 'text-color': '#ffffff', 'text-halo-color': ['get', 'color'], 'text-halo-width': 2, 'text-halo-blur': 1.5 },
+    });
+
     // Owners' billboards: glowing text above their building for everyone to see.
     m.addLayer({
       id: 'sw-signs',
@@ -272,7 +355,8 @@ export class MapController extends Emitter {
         'text-halo-color': 'rgba(0, 0, 0, 0.88)',
         'text-halo-width': 1.8,
         'text-halo-blur': 0.6,
-        'text-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0, 10, 1],
+        // At street level the billboard moves down onto its board by the road (sw-street-signs).
+        'text-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0, 10, 1, 16.3, 1, 16.9, 0],
       },
     });
     m.addLayer({
@@ -320,6 +404,8 @@ export class MapController extends Emitter {
     if (this.phase === phase) return;
     this.phase = phase;
     for (const id of FACADE_IDS) if (m.hasImage(id)) m.updateImage(id, facadeImage(id, phase));
+    if (m.hasImage('sw-asphalt')) m.updateImage('sw-asphalt', asphaltImage(phase));
+    if (m.hasImage('sw-sidewalk')) m.updateImage('sw-sidewalk', sidewalkImage(phase));
     const paint = (layer, prop, value) => m.getLayer(layer) && m.setPaintProperty(layer, prop, value);
     const sat = { day: [0.97, -0.05, 0.96], dusk: [0.72, -0.12, 0.9], night: [0.42, -0.45, 0.84] }[phase];
     paint('satellite', 'raster-brightness-max', sat[0]);
@@ -484,6 +570,53 @@ export class MapController extends Emitter {
       };
       setTimeout(check, 30);
     });
+  }
+
+  /** Parks and woods around the view (for trees). */
+  greenFeatures() {
+    try {
+      return [
+        ...this.map.querySourceFeatures('omt', { sourceLayer: 'park' }),
+        ...this.map.querySourceFeatures('omt', { sourceLayer: 'landcover', filter: ['match', ['get', 'class'], ['wood', 'forest', 'grass'], true, false] }),
+      ];
+    } catch {
+      return [];
+    }
+  }
+
+  /** The 3D street around the view (streetscape.js output). */
+  setStreetscape(scape) {
+    if (!this.ready) return;
+    const empty = EMPTY;
+    this.map.getSource('sw-surfaces').setData(scape?.surfaces || empty);
+    this.map.getSource('sw-markings').setData(scape?.markings || empty);
+    this.map.getSource('sw-trees').setData(scape?.trees || empty);
+    this.map.getSource('sw-street-signs').setData(scape?.signs || empty);
+  }
+
+  /** Owned land (registry territories); mine in mint, others in violet. */
+  setTerritories(list, me, nameOf = () => '') {
+    if (!this.ready) return;
+    this.map.getSource('sw-lands').setData({
+      type: 'FeatureCollection',
+      features: list.map((t) => {
+        const [w, s, e, n] = t.bbox;
+        return {
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] },
+          properties: { title: t.title || `${nameOf(t.owner)}’s ${t.tier.toLowerCase()}`, tier: t.tier, color: t.owner === me ? COLORS.mine : COLORS.owned },
+        };
+      }),
+    });
+  }
+
+  /** The area being selected with the takeover tool. */
+  setDraft(bbox, state = 'ok') {
+    if (!this.ready) return;
+    const [w, s, e, n] = bbox || [];
+    this.map.getSource('sw-draft').setData(
+      bbox ? { type: 'FeatureCollection', features: [{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[w, s], [e, s], [e, n], [w, n], [w, s]]] }, properties: { state } }] } : EMPTY,
+    );
   }
 
   /** Draws the street-life agents (see traffic.js). */

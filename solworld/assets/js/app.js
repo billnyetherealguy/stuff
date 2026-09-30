@@ -19,12 +19,14 @@ import { ChainRegistry, DEMO_TREASURY, DemoRegistry, SIGN_COLORS, buildMemo, isB
 import { WalletManager, isUserRejection } from './wallet.js';
 import { BurnerWallet, verifySignature } from './burner.js';
 import { actionMessage, buildSaleMessage, createNonceMessage, nonceAddressFor } from './market.js';
-import { priceBuilding } from './pricing.js';
+import { priceBuilding, tierFor } from './pricing.js';
 import { sunPosition } from './sun.js';
 import { buildingSkin } from './skin.js';
 import { Realistic3D } from './realistic3d.js';
 import { StreetDrop } from './streetview.js';
+import { TakeoverTool } from './ui/takeover.js';
 import { Traffic } from './traffic.js';
+import { buildStreetscape } from './streetscape.js';
 import { SIGN_CLASSES } from './mapstyle.js';
 import { OsmClient, buildingHeights, geoKey, geoKeyCenter, isOsmKey } from './osm.js';
 import { Geocoder, PhotoFinder, SolPrice, buildingKind, buildingTitle } from './info.js';
@@ -66,6 +68,9 @@ const VOID_REASONS = {
   'not-owner': 'The seller no longer owned it.',
   'bad-sale': 'The sale didn’t match the offer.',
   'name-taken': 'Someone already has that name. Try another.',
+  'land-taken': 'Someone took over part of that land a moment before you.',
+  'in-territory': 'That building is part of someone’s territory now.',
+  'bad-land': 'That area isn’t valid.',
 };
 
 async function boot() {
@@ -150,7 +155,18 @@ async function boot() {
     onHelp: () => openHelp(ctx),
     onOperator: () => openOperator(ctx),
     onOwner: (address) => rail.showOwner(address),
-    onOpenRecord: (rec) => openKey(rec.key, [rec.lng, rec.lat]),
+    onOpenRecord: (rec) => {
+      if (rec.kind === 'land') {
+        const t = rec.bbox ? rec : registry.state.territories.find((x) => x.sig === rec.sig);
+        const [w, so, e, n] = (t || rec).bbox || [];
+        if (w != null) {
+          hero.hide();
+          mapc.flyToExtent([w, n, e, so], { maxZoom: 16 });
+        }
+        return;
+      }
+      openKey(rec.key, [rec.lng, rec.lat]);
+    },
     onOpenOffer: (offer) => {
       const b = registry.state.buildings.get(offer.key);
       openKey(offer.key, b ? [b.lng, b.lat] : undefined);
@@ -183,6 +199,9 @@ async function boot() {
       return false;
     },
     onSetName: (name) => setName(name),
+    solUsd: () => solPrice.get(),
+    onBuyLand: (land) => buyLand(land),
+    territoryAt: (lngLat) => registry.state.territoryAt?.(lngLat[0], lngLat[1]) || null,
     onStreet: (lngLat) => dropIn(lngLat),
     onSetKey3d: (apiKey, btn) => publishSetting(buildMemo('tiles', { apiKey }), 'Realistic 3D is on', btn),
     key3dActive: () => !!(settings.realistic3d.googleKey || registry.state.key3d || settings.realistic3d.ionToken),
@@ -370,6 +389,9 @@ async function boot() {
 
   const street = new StreetDrop({ root: $('#street') });
   street.setKey(settings.realistic3d.googleKey);
+  const takeover = new TakeoverTool({ mapc, ctx, root: $('#takeover') });
+  const takeoverButton = h('button', { class: 'ctrl-pill glass', onclick: () => (takeover.active ? takeover.stop() : (hero.hide(), closeSelection(), takeover.begin())) }, h('span', { svg: icon('trophy', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Take over'));
+  $('#controls').append(takeoverButton);
   const walkButton = h('button', { class: 'ctrl-pill glass is-hidden', onclick: () => dropIn() }, h('span', { svg: icon('street', { size: 16 }) }), h('span', { class: 'ctrl-pill-label' }, 'Walk here'));
   $('#controls').append(walkButton);
   const paintWalk = () => walkButton.classList.toggle('is-hidden', !(!hero.visible && (r3d.active || mapc.zoom >= 15.5)));
@@ -453,6 +475,36 @@ async function boot() {
     // Roads may not be loaded yet: only remember this spot once there was something to drive on.
     trafficAt = traffic.lanes.car.length || traffic.lanes.foot.length ? { center, night } : null;
   }
+  // The street up close: sidewalks, asphalt, markings and trees, rebuilt as you move.
+  let scapeAt = null;
+  let scapeRoads = 0;
+  let scapeSigns = '';
+  let scapeRetry = 0;
+  function refreshStreetscape(tries = 0) {
+    clearTimeout(scapeRetry);
+    if (mapc.zoom < 15.8 || r3d.active) {
+      if (scapeAt) mapc.setStreetscape(null);
+      scapeAt = null;
+      return;
+    }
+    const center = mapc.center;
+    const roads = mapc.roadFeatures();
+    const signs = [...registry.state.buildings.values()]
+      .filter((r) => r.sign?.text && distanceM(center, [r.lng, r.lat]) < 520)
+      .map((r) => ({ lng: r.lng, lat: r.lat, text: r.sign.text, color: SIGN_COLORS[r.sign.color] || SIGN_COLORS[0] }));
+    const signKey = signs.map((s) => `${s.lng},${s.lat},${s.text},${s.color}`).join('|');
+    // Same spot, no new road tiles and the same billboards: nothing to rebuild.
+    if (scapeAt && distanceM(scapeAt, center) < 150 && roads.length <= scapeRoads * 1.1 && signKey === scapeSigns) return;
+    scapeSigns = signKey;
+    const scape = buildStreetscape(center, roads, mapc.greenFeatures(), { radius: mapc.zoom >= 17 ? 320 : 480, signs });
+    mapc.setStreetscape(scape);
+    scapeAt = scape.surfaces.features.length ? center : null;
+    scapeRoads = roads.length;
+    // Road tiles can land after the map settles: look again shortly.
+    if (tries < 6) scapeRetry = setTimeout(() => refreshStreetscape(tries + 1), 1500);
+  }
+  mapc.map.on('moveend', () => mapc.settled().then(() => refreshStreetscape()));
+
   // Refresh the street network after moving, once the new tiles are in.
   mapc.map.on('moveend', () => mapc.settled().then(() => !r3d.active && refreshTraffic()));
   let lastFrame = 0;
@@ -811,6 +863,8 @@ async function boot() {
     }
     const { building } = current;
     const { key } = building;
+    const land = registry.state.territoryAt?.(building.center[0], building.center[1]);
+    if (land && !registry.state.buildings.has(key)) return void toast({ title: `Part of ${land.title || land.tier}`, body: `Owned by ${who(land.owner)} as part of their ${land.tier.toLowerCase()}.`, tone: 'info' });
     if (!(await ensureWallet())) return;
     const price = ctx.priceFor(building).lamports;
     const balance = (await wallet.refreshBalance()) ?? 0;
@@ -964,6 +1018,30 @@ async function boot() {
         live &&
         toast({ title: 'Tip', body: 'Cancelling hides the offer everywhere. To be 100% sure it can never execute, keep your balance below the offer amount.', tone: 'info', duration: 8000 }),
     });
+  }
+
+  /** City takeover: buy all the land in a box in one transaction. */
+  async function buyLand({ bbox, price, count, title }) {
+    if (!(await ensureWallet())) return false;
+    const balance = (await wallet.refreshBalance()) ?? 0;
+    if (balance < price + FEE_BUFFER) {
+      walletUI.deposit({ need: price + FEE_BUFFER - balance });
+      return false;
+    }
+    const memo = buildMemo('land', { bbox, price, count, title });
+    const land = parseMemo(memo);
+    const name = land.title || `${who(me())}’s ${tierFor(count).toLowerCase()}`;
+    const result = await runAction({
+      label: `${name} · ${fmtInt(count)} buildings`,
+      pending: `Taking over ${fmtSol(price)} SOL of land`,
+      success: `You founded ${name}, a ${tierFor(count).toLowerCase()}!`,
+      fn: () => sendAction({ lamports: price, memo }),
+      onDone: () => {
+        celebrate();
+        mapc.flyToExtent([bbox[0], bbox[3], bbox[2], bbox[1]], { maxZoom: 16 });
+      },
+    });
+    return !!result?.ok;
   }
 
   async function setName(name) {
@@ -1338,6 +1416,8 @@ async function boot() {
     const state = registry.state;
     const records = [...state.buildings.values()];
     mapc.setOwnership(records, me());
+    mapc.setTerritories(state.territories || [], me(), who);
+    refreshStreetscape(); // billboards may have changed
     if (current) mapc.setSelection({ key: current.key, polygons: current.building.polygons, anchor: current.building.center, tone: toneFor(current.key) });
     if (current && r3d.active) r3d.setSelection({ polygons: current.building.polygons, height: Math.max(current.tileTop || 0, buildingHeights(current.building.tags).top), tone: toneFor(current.key) });
     if (!settings.realistic3d.googleKey && registry.state.key3d) {
@@ -1466,7 +1546,7 @@ async function boot() {
   setInterval(() => wallet.exists && document.visibilityState === 'visible' && wallet.refreshBalance(), live ? 30_000 : 60_000);
 
   // Handy for debugging from the console.
-  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx, r3d, traffic, street };
+  window.solworld = { settings, registry, wallet, ext, map: mapc, osm, ctx, r3d, traffic, street, takeover, refreshStreetscape };
 }
 
 /* -------------------------------------------------------------- demo */

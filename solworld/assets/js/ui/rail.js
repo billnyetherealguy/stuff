@@ -140,7 +140,7 @@ export class Rail {
               h(
                 'span',
                 { class: 'feed-main' },
-                h('span', { class: 'feed-line' }, h('b', { class: 'mono' }, r.owner === me ? 'You' : who(r.owner)), r.kind === 'hold' ? ' took a building with credit' : r.kind === 'sale' ? ` bought from ${r.seller === me ? 'you' : who(r.seller)}` : ' bought a building'),
+                h('span', { class: 'feed-line' }, h('b', { class: 'mono' }, r.owner === me ? 'You' : who(r.owner)), r.kind === 'land' ? ` founded ${r.title || 'a ' + r.tier.toLowerCase()} (${r.tier}, ${fmtInt(r.count)} buildings)` : r.kind === 'hold' ? ' took a building with credit' : r.kind === 'sale' ? ` bought from ${r.seller === me ? 'you' : who(r.seller)}` : ' bought a building'),
                 h('span', { class: 'feed-meta' }, h('span', { svg: icon('pin', { size: 12 }) }), this.label(r), h('span', { class: 'dot-sep' }, '·'), timeAgo(r.time)),
               ),
               h('span', { class: `feed-amt${r.kind === 'hold' ? ' is-free' : ''}` }, r.kind === 'hold' ? 'CREDIT' : `${fmtSol(r.price)} SOL`),
@@ -185,6 +185,25 @@ export class Rail {
             stat(o ? fmtSol(o.value) : '0', 'SOL value'),
           ),
         ),
+        (o?.territories || []).length
+          ? h(
+              'ul',
+              { class: 'feed' },
+              o.territories.map((t, i) =>
+                h(
+                  'li',
+                  { style: { '--i': Math.min(i, 12) } },
+                  h(
+                    'button',
+                    { class: 'feed-item', onclick: () => this.ctx.onOpenRecord({ kind: 'land', bbox: t.bbox }) },
+                    h('span', { class: 'feed-icon', svg: icon('trophy', { size: 16 }) }),
+                    h('span', { class: 'feed-main' }, h('span', { class: 'feed-line' }, t.title || t.tier), h('span', { class: 'feed-meta' }, `${t.tier} · ${fmtInt(t.count)} buildings · ${fmtSol(t.price)} SOL`)),
+                    h('span', { svg: icon('chevronRight', { size: 16 }) }),
+                  ),
+                ),
+              ),
+            )
+          : null,
         records.length
           ? h(
               'ul',

@@ -328,6 +328,8 @@ export class MapController extends Emitter {
         'text-letter-spacing': 0.04,
         'text-max-width': 12,
         'symbol-placement': 'point',
+        // A territory's name always shows, even over busy street labels.
+        'text-allow-overlap': true,
       },
       paint: { 'text-color': '#ffffff', 'text-halo-color': ['get', 'color'], 'text-halo-width': 2, 'text-halo-blur': 1.5 },
     });

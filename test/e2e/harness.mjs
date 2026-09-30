@@ -234,14 +234,14 @@ function groundPng(z, y, x) {
  * Launches Chromium with every Solworld dependency routed to local fakes.
  * `config` overrides config.js (undefined = ship the real file untouched).
  */
-export async function launch({ origin, tiles, services, chain, config, viewport = { width: 1440, height: 900 }, mobile = false, wallet: walletOn = true }) {
+export async function launch({ origin, tiles, services, chain, config, viewport = { width: 1440, height: 900 }, mobile = false, scale, wallet: walletOn = true }) {
   const browser = await chromium.launch({
     executablePath: '/opt/pw-browsers/chromium',
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--enable-webgl'],
   });
   const context = await browser.newContext({
     viewport,
-    deviceScaleFactor: mobile ? 2 : 1,
+    deviceScaleFactor: scale ?? (mobile ? 2 : 1),
     isMobile: mobile,
     hasTouch: mobile,
     userAgent: mobile ? 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1' : undefined,

@@ -277,17 +277,22 @@ async function demo(env) {
       assert.equal(await page.evaluate(() => window.solworld.wallet.balance) - before, 3_900_000_000 - 39_000_000); // 1% tax
     });
 
-    await step('demo: close up, buildings get lit facades over satellite ground', async () => {
+    await step('demo: close up, the same clean 3D buildings (no textures, no satellite ground)', async () => {
       await closePanel(page);
-      await page.evaluate(([lng, lat]) => window.solworld.map.map.jumpTo({ center: [lng, lat], zoom: 17.2, pitch: 62, bearing: 30 }), EMPIRE);
+      // An ordinary block (not the foot of a 443 m tower, which fills any close view).
+      await page.evaluate(() => window.solworld.map.map.jumpTo({ center: [-73.9905, 40.7418], zoom: 17.2, pitch: 55, bearing: 30 }));
       await page.evaluate(() => window.solworld.map.settled());
       await page.waitForTimeout(800);
-      const ok = await page.evaluate(() => {
+      const state = await page.evaluate(() => {
         const m = window.solworld.map.map;
-        return m.getZoom() >= 16 && !!m.getLayer('building-facade') && m.hasImage('facade-0') && !!m.getLayer('satellite');
+        const c = m.getCanvas();
+        let buildings = 0;
+        for (let x = 0.4; x < 1; x += 0.1) for (let y = 0.2; y < 0.9; y += 0.1) buildings += m.queryRenderedFeatures([c.clientWidth * x, c.clientHeight * y], { layers: ['building-3d'] }).length ? 1 : 0;
+        return { zoom: m.getZoom(), buildings, facade: !!m.getLayer('building-facade'), satellite: !!m.getLayer('satellite') };
       });
-      assert.ok(ok, 'facade patterns + satellite ground are active');
-      await shot(page, '12-closeup-realism');
+      assert.ok(state.zoom >= 16 && state.buildings > 10, JSON.stringify(state));
+      assert.ok(!state.facade && !state.satellite, 'no textured facades or satellite ground');
+      await shot(page, '12-closeup');
     });
 
     await step('demo: leaderboard, activity and owner profile', async () => {

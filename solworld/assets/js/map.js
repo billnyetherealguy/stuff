@@ -4,7 +4,6 @@
 import * as maplibregl from '../../vendor/maplibre-6.11.2/maplibre-gl.mjs';
 import { Emitter } from './emitter.js';
 import { buildStyle } from './mapstyle.js';
-import { FACADE_IDS, facadeImage } from './facade.js';
 import { sunPosition } from './sun.js';
 import { agentFootprint } from './traffic.js';
 import { asphaltImage, sidewalkImage } from './streetscape.js';
@@ -110,8 +109,7 @@ export class MapController extends Emitter {
 
     // Facade patterns are drawn on demand, the first time a tile needs one.
     this.map.setMissingStyleImageResolver(async (id) => {
-      if (FACADE_IDS.includes(id) && !this.map.hasImage(id)) this.map.addImage(id, facadeImage(id, this.phase || 'night'), { pixelRatio: 4 });
-      else if (id === 'sw-asphalt' && !this.map.hasImage(id)) this.map.addImage(id, asphaltImage(this.phase || 'day'), { pixelRatio: 4 });
+      if (id === 'sw-asphalt' && !this.map.hasImage(id)) this.map.addImage(id, asphaltImage(this.phase || 'day'), { pixelRatio: 4 });
       else if (id === 'sw-sidewalk' && !this.map.hasImage(id)) this.map.addImage(id, sidewalkImage(this.phase || 'day'), { pixelRatio: 6 });
       else if (id === 'sw-skin' && this.skin && !this.map.hasImage(id)) this.map.addImage(id, this.skin.image, { pixelRatio: 1 });
     });
@@ -435,7 +433,7 @@ export class MapController extends Emitter {
 
   /**
    * Lights the map with the real sun at the view center: the light comes from
-   * where the sun is right now, and satellite ground, facades, neon and sky
+   * where the sun is right now, and the buildings, shop names and sky
    * switch between day, golden hour and night.
    */
   updateDaylight(date = new Date()) {
@@ -454,14 +452,9 @@ export class MapController extends Emitter {
     this.sun = sun;
     if (this.phase === phase) return;
     this.phase = phase;
-    for (const id of FACADE_IDS) if (m.hasImage(id)) m.updateImage(id, facadeImage(id, phase));
     if (m.hasImage('sw-asphalt')) m.updateImage('sw-asphalt', asphaltImage(phase));
     if (m.hasImage('sw-sidewalk')) m.updateImage('sw-sidewalk', sidewalkImage(phase));
     const paint = (layer, prop, value) => m.getLayer(layer) && m.setPaintProperty(layer, prop, value);
-    const sat = { day: [0.97, -0.05, 0.96], dusk: [0.72, -0.12, 0.9], night: [0.42, -0.45, 0.84] }[phase];
-    paint('satellite', 'raster-brightness-max', sat[0]);
-    paint('satellite', 'raster-saturation', sat[1]);
-    paint('satellite', 'raster-opacity', ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, sat[2]]);
     // Headlights only after dark.
     paint('sw-headlights', 'circle-opacity', { day: 0, dusk: 0.6, night: 0.9 }[phase]);
     // Shop names: calm labels up close, a touch dimmer at night so they don't shout.
@@ -558,7 +551,7 @@ export class MapController extends Emitter {
         const base = Number(f.properties?.render_min_height ?? 0);
         return parts.map((part) => ({ part, top, base, feature: f, alone: parts.length === 1 }));
       });
-    let hit = pickOnRay(toCandidates(this.map.queryRenderedFeatures(point, { layers: ['building-facade', 'building-3d'] })), ground, this.cameraInfo());
+    let hit = pickOnRay(toCandidates(this.map.queryRenderedFeatures(point, { layers: ['building-3d'] })), ground, this.cameraInfo());
     if (!hit) hit = toCandidates(this.map.queryRenderedFeatures(point, { layers: ['building-pick'] })).find((c) => pointInPolygon(ground, c.part)) || null;
     if (!hit && reach) {
       // Just missed (a street, a gap, a fat finger): take the closest building nearby.
@@ -567,7 +560,7 @@ export class MapController extends Emitter {
         [point.x + reach, point.y + reach],
       ];
       let best = Infinity;
-      for (const c of toCandidates(this.map.queryRenderedFeatures(box, { layers: ['building-facade', 'building-3d', 'building-pick'] }))) {
+      for (const c of toCandidates(this.map.queryRenderedFeatures(box, { layers: ['building-3d', 'building-pick'] }))) {
         const d = distanceToRing(ground, c.part[0]);
         if (d < best) {
           best = d;

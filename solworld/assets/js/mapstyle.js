@@ -98,9 +98,9 @@ function muted(hex, amount = 0.55) {
 }
 const SHOP_LABEL_COLOR = ['match', ['get', 'class'], ...Object.entries(SIGN_CLASSES).flatMap(([k, v]) => [k, muted(v)]), muted(NEON[2])];
 
-export const CLOSE_UP_ZOOM = 16; // buildings switch to lit, windowed facades here
+export const CLOSE_UP_ZOOM = 16; // close-up zoom (street-level details)
 
-export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMaxZoom = 19, satelliteAttribution }) {
+export function buildStyle({ tiles, glyphs, attribution }) {
   return {
     version: 8,
     name: 'Solworld Dark',
@@ -118,7 +118,6 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
     },
     sources: {
       omt: { type: 'vector', url: tiles, attribution },
-      ...(satellite ? { sat: { type: 'raster', tiles: [satellite], tileSize: 256, maxzoom: satelliteMaxZoom, attribution: satelliteAttribution } } : {}),
     },
     layers: [
       { id: 'land', type: 'background', paint: { 'background-color': P.land } },
@@ -210,24 +209,6 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
         },
       },
 
-      ...(satellite
-        ? [
-            {
-              // Real ground (trees, pools, courtyards) close up, darkened to the night palette.
-              id: 'satellite',
-              type: 'raster',
-              source: 'sat',
-              minzoom: 15.2,
-              paint: {
-                'raster-opacity': ['interpolate', ['linear'], ['zoom'], 15.2, 0, 16.6, 0.82],
-                'raster-brightness-max': 0.5,
-                'raster-saturation': -0.35,
-                'raster-contrast': 0.08,
-                'raster-fade-duration': 250,
-              },
-            },
-          ]
-        : []),
 
       {
         id: 'road-tunnel',
@@ -348,7 +329,6 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
         source: 'omt',
         'source-layer': 'building',
         minzoom: 14,
-        maxzoom: CLOSE_UP_ZOOM,
         filter: ['!=', ['get', 'hide_3d'], true],
         paint: {
           'fill-extrusion-color': [
@@ -365,34 +345,10 @@ export function buildStyle({ tiles, glyphs, attribution, satellite, satelliteMax
           // The city rises into 3D as you zoom in.
           'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.8, ['coalesce', ['get', 'render_height'], 5]],
           'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.8, ['coalesce', ['get', 'render_min_height'], 0]],
-          'fill-extrusion-opacity': 0.94,
+          'fill-extrusion-opacity': 1,
           'fill-extrusion-vertical-gradient': true,
         },
       },
-      {
-        // Close up: the same buildings with lit windows (images from facade.js).
-        id: 'building-facade',
-        type: 'fill-extrusion',
-        source: 'omt',
-        'source-layer': 'building',
-        minzoom: CLOSE_UP_ZOOM,
-        filter: ['!=', ['get', 'hide_3d'], true],
-        paint: {
-          'fill-extrusion-pattern': [
-            'case',
-            ['>=', ['coalesce', ['get', 'render_height'], 5], 60],
-            ['match', ['%', ['floor', ['coalesce', ['get', 'render_height'], 5]], 2], 0, 'facade-2', 'facade-0'],
-            ['<', ['coalesce', ['get', 'render_height'], 5], 14],
-            'facade-1',
-            ['match', ['%', ['floor', ['coalesce', ['get', 'render_height'], 5]], 3], 0, 'facade-3', 1, 'facade-0', 'facade-1'],
-          ],
-          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 5],
-          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-          'fill-extrusion-opacity': 0.97,
-          'fill-extrusion-vertical-gradient': true,
-        },
-      },
-
       {
         // Shops, bars, restaurants, cinemas, hotels… named where they really are,
         // up close only, in calm muted colors (owners' billboards are what glow).

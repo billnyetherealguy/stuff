@@ -49,7 +49,7 @@ window.SOLWORLD_CONFIG = {
   // "Access Tokens" and paste it below. Leave googleKey empty.
   realistic3d: {
     googleKey: "",
-    cesiumIonToken: "",
+    cesiumIonToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjJuUHdCRVgzWUlOYUhnSm4iLCJqdGkiOiI4YmI5NzgwYS05MWQ0LTQyZDUtOWFkZS0zNjY1NWUwNWU5YzEiLCJpZCI6NTEyMzA1LCJzdWIiOiJiaWxsbnlldGhlcmVhbGd1eSIsImlzcyI6Imh0dHBzOi8vYXBpLmNlc2l1bS5jb20iLCJhdWQiOiJTb2xXb3JsZCIsImlhdCI6MTc5MDc5MDYwMH0.mE9UGx8su3PJWVxgeguj8ZXmJST_mJ776U_Pg0J0kEA",
   },
 
   // Optional: your own Solana RPC endpoint(s), tried in order. The public

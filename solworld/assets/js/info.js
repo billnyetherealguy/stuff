@@ -291,6 +291,16 @@ export function satelliteView({ template, maxZoom = 19, polygons, width, height,
   let failures = 0;
   let total = 0;
   const frame = h('div', { class: 'sat', style: { width: '100%', aspectRatio: `${width} / ${height}` } }, pan);
+  // Tiles and outline share one fixed-aspect box that covers the frame (a stretched
+  // frame would stretch the tiles but not the outline, pulling them apart).
+  const cover = () => {
+    const fw = frame.clientWidth;
+    const fh = frame.clientHeight;
+    if (!fw || !fh) return;
+    const k = Math.max(fw / width, fh / height);
+    Object.assign(pan.style, { inset: 'auto', width: `${width * k}px`, height: `${height * k}px`, left: `${(fw - width * k) / 2}px`, top: `${(fh - height * k) / 2}px` });
+  };
+  if (globalThis.ResizeObserver) new ResizeObserver(cover).observe(frame);
   for (let ty = Math.floor(top / 256); ty <= Math.floor((top + height * scale) / 256); ty++) {
     if (ty < 0 || ty >= n2) continue;
     for (let tx = Math.floor(left / 256); tx <= Math.floor((left + width * scale) / 256); tx++) {
@@ -331,7 +341,7 @@ export function satelliteView({ template, maxZoom = 19, polygons, width, height,
   const d = polygons.map((p) => p.map((ring) => `M${ring.map(toSvg).join('L')}Z`).join('')).join('');
   const svg = h('div', {
     class: 'sat-outline',
-    svg: `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    svg: `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
       <defs><filter id="satglow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3.2"/></filter></defs>
       <path d="${d}" class="sat-glow" filter="url(#satglow)" fill-rule="evenodd"/>
       <path d="${d}" class="sat-fill" fill-rule="evenodd"/>
@@ -359,7 +369,7 @@ export function satelliteView({ template, maxZoom = 19, polygons, width, height,
     pan.append(
       h('div', {
         class: 'sat-lights',
-        svg: `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        svg: `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
           <defs><filter id="winglow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="2.6"/></filter></defs>
           <g filter="url(#winglow)" opacity="${phase === 'night' ? 1 : 0.55}">${dots.join('')}</g>
           <g opacity="${phase === 'night' ? 0.9 : 0.45}">${dots.join('').replace(/r="([\d.]+)"/g, (m, r) => `r="${(r / 3).toFixed(2)}"`)}</g>

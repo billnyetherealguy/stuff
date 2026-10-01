@@ -304,7 +304,7 @@ export class Realistic3D extends Emitter {
   _ours() {
     const out = [];
     for (const e of this.agentModels?.values() || []) if (e.model) out.push(e.model);
-    for (const p of [this.labels, this.lights, this.selectionPrim, this.ownedPrim]) if (p) out.push(p);
+    for (const p of [this.labels, this.lights, this.selectionPrim, this.outlinePrim, this.ownedPrim]) if (p) out.push(p);
     return out;
   }
 
@@ -563,15 +563,77 @@ export class Realistic3D extends Emitter {
     }
   }
 
-  /** Tints the real building mesh (classification) — the selected one brighter. */
+  /**
+   * Highlights the real building: a soft tint on its mesh (classification, which
+   * follows the photographed surfaces) and a glowing outline at its real roof
+   * height, measured from the 3D tiles rather than guessed from OpenStreetMap.
+   */
   setSelection({ polygons, height = 20, ground = this.lastGround ?? 0, tone } = {}) {
     if (!this.viewer) return;
     const Cesium = this.Cesium;
-    if (this.selectionPrim) this.viewer.scene.primitives.remove(this.selectionPrim);
-    this.selectionPrim = null;
+    for (const key of ['selectionPrim', 'outlinePrim']) {
+      if (this[key]) this.viewer.scene.primitives.remove(this[key]);
+      this[key] = null;
+    }
+    const token = (this.selectionToken = {});
     if (!polygons?.length) return;
-    const color = tone === 'mine' ? '#2af5a8' : tone === 'owned' ? '#8f6bff' : '#ffffff';
-    this.selectionPrim = this.viewer.scene.primitives.add(this._classify(polygons, ground, height, Cesium.Color.fromCssColorString(color).withAlpha(0.45)));
+    const css = tone === 'mine' ? '#2af5a8' : tone === 'owned' ? '#8f6bff' : '#7aa2ff';
+    const color = Cesium.Color.fromCssColorString(css);
+    // Tall enough for any real roof: classification only colors mesh inside the footprint.
+    this.selectionPrim = this.viewer.scene.primitives.add(
+      new Cesium.ClassificationPrimitive({
+        geometryInstances: polygons.map((p) => this._instance(p, ground - 30, ground + Math.max(height * 2, height + 120), color.withAlpha(0.3))),
+        appearance: new Cesium.PerInstanceColorAppearance({ flat: true, translucent: true }),
+        classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
+        asynchronous: true,
+      }),
+    );
+    this._drawOutline(polygons, ground, ground + height, color);
+    this._roofOf(polygons, ground).then((roof) => {
+      if (this.selectionToken === token && roof != null) this._drawOutline(polygons, ground, roof, color);
+    });
+  }
+
+  /** The real roof height (ellipsoid m) over a footprint: the highest of a few samples inside it. */
+  async _roofOf(polygons, ground) {
+    const Cesium = this.Cesium;
+    const pts = [];
+    for (const poly of polygons.slice(0, 4)) {
+      const ring = poly[0];
+      const c = ring.reduce((a, [x, y]) => [a[0] + x / ring.length, a[1] + y / ring.length], [0, 0]);
+      pts.push(c);
+      const step = Math.max(1, Math.floor(ring.length / 8));
+      for (let i = 0; i < ring.length; i += step) pts.push([c[0] + (ring[i][0] - c[0]) * 0.6, c[1] + (ring[i][1] - c[1]) * 0.6]);
+    }
+    try {
+      const got = await this.viewer.scene.sampleHeightMostDetailed(pts.map(([x, y]) => Cesium.Cartographic.fromDegrees(x, y)), this._ours());
+      const hs = got.map((c) => c?.height).filter((h) => Number.isFinite(h) && h > ground + 2);
+      if (!hs.length) return null;
+      hs.sort((a, b) => a - b);
+      return hs[Math.floor(hs.length * 0.85)]; // high, but not a lone antenna
+    } catch {
+      return null;
+    }
+  }
+
+  _drawOutline(polygons, ground, roof, color) {
+    const Cesium = this.Cesium;
+    if (this.outlinePrim) this.viewer.scene.primitives.remove(this.outlinePrim);
+    const lines = [];
+    for (const poly of polygons) {
+      const ring = poly[0];
+      lines.push(ring.map(([x, y]) => Cesium.Cartesian3.fromDegrees(x, y, roof + 0.6)));
+      lines.push(ring.map(([x, y]) => Cesium.Cartesian3.fromDegrees(x, y, ground + 0.4)));
+      const step = Math.max(1, Math.ceil(ring.length / 24));
+      for (let i = 0; i < ring.length - 1; i += step) lines.push([Cesium.Cartesian3.fromDegrees(ring[i][0], ring[i][1], ground + 0.4), Cesium.Cartesian3.fromDegrees(ring[i][0], ring[i][1], roof + 0.6)]);
+    }
+    this.outlinePrim = this.viewer.scene.primitives.add(
+      new Cesium.Primitive({
+        geometryInstances: lines.map((positions) => new Cesium.GeometryInstance({ geometry: new Cesium.PolylineGeometry({ positions, width: 6, vertexFormat: Cesium.PolylineMaterialAppearance.VERTEX_FORMAT }) })),
+        appearance: new Cesium.PolylineMaterialAppearance({ material: Cesium.Material.fromType('PolylineGlow', { color: color.withAlpha(0.95), glowPower: 0.22, taperPower: 1 }) }),
+        asynchronous: true,
+      }),
+    );
   }
 
   /** Owned buildings nearby, tinted in their owner color. */
@@ -599,16 +661,6 @@ export class Realistic3D extends Emitter {
     return new Cesium.GeometryInstance({
       geometry: new Cesium.PolygonGeometry({ polygonHierarchy: new Cesium.PolygonHierarchy(outer, holes), height: bottom, extrudedHeight: top }),
       attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(color) },
-    });
-  }
-
-  _classify(polygons, ground, height, color) {
-    const Cesium = this.Cesium;
-    return new Cesium.ClassificationPrimitive({
-      geometryInstances: polygons.map((p) => this._instance(p, ground - 20, ground + height + 40, color)),
-      appearance: new Cesium.PerInstanceColorAppearance({ flat: true, translucent: true }),
-      classificationType: Cesium.ClassificationType.CESIUM_3D_TILE,
-      asynchronous: true,
     });
   }
 

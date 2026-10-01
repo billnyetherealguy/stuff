@@ -149,8 +149,10 @@ export class Traffic {
       car: !!spec,
       walk: !!spec?.walk,
       path,
-      // Lanes each way (all of them on a one-way street).
-      carLanes: oneway ? total : Math.max(1, Math.floor(total / 2)),
+      // Lanes each way (all of them on a one-way street). Road widths are guessed
+      // from the road class, so only big roads get extra lanes: an outer lane that
+      // isn't really there puts cars on the sidewalk.
+      carLanes: cls === 'motorway' || cls === 'trunk' ? (oneway ? total : Math.max(1, Math.floor(total / 2))) : oneway ? Math.min(2, total) : 1,
     };
   }
 
@@ -428,8 +430,9 @@ export class Traffic {
     let off;
     if (a.kind === 'car') {
       const lanes = a.road.carLanes;
-      const w = a.road.oneway ? (2 * a.road.half) / lanes : Math.min(LANE_W, a.road.half / lanes);
-      const fromCenter = a.road.oneway ? -a.road.half + (a.lane + 0.5) * w : (lanes - 1 - a.lane + 0.5) * w;
+      // Stay well inside the guessed width, close to the center line.
+      const w = a.road.oneway ? Math.min(LANE_W, (1.3 * a.road.half) / lanes) : Math.min(LANE_W, (0.65 * a.road.half) / lanes);
+      const fromCenter = a.road.oneway ? (a.lane - (lanes - 1) / 2) * w : (lanes - 1 - a.lane + 0.5) * w;
       // two-way: drive on your own side of the center line (right, or left where traffic keeps left)
       off = a.road.oneway ? fromCenter * (this.left ? -1 : 1) : fromCenter * a.dir * (this.left ? -1 : 1);
     } else off = a.side ? a.side * (a.road.half + SIDEWALK * 0.5 + a.lat * 0.9) : a.lat;

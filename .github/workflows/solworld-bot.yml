@@ -1,0 +1,41 @@
+name: Solworld X bot
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency: solworld-bot
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Restore bot memory
+        uses: actions/cache/restore@v4
+        with:
+          path: bot/state.json
+          key: bot-state-${{ github.run_id }}
+          restore-keys: bot-state-
+      - name: Run
+        run: node bot/bot.mjs
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          SOLANA_RPC: ${{ secrets.SOLANA_RPC }}
+          SITE_URL: ${{ vars.SITE_URL }}
+          POST_EVERY_HOURS: ${{ vars.POST_EVERY_HOURS }}
+          REPLY_TO_MENTIONS: ${{ vars.REPLY_TO_MENTIONS }}
+      - name: Save bot memory
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: bot/state.json
+          key: bot-state-${{ github.run_id }}

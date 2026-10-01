@@ -27,3 +27,4 @@ replay_pid*
 node_modules/
 test/artifacts/
 .DS_Store
+bot/state.json

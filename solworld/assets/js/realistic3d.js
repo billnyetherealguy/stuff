@@ -654,14 +654,14 @@ export class Realistic3D extends Emitter {
         asynchronous: true,
       }),
     );
-    this._drawOutline(polygons, ground, ground + height, color);
-    this._roofOf(polygons, ground).then((roof) => {
+    // The outline waits for the real roof: a guessed height can float far above it.
+    this._roofOf(polygons, ground, height).then((roof) => {
       if (this.selectionToken === token && roof != null) this._drawOutline(polygons, ground, roof, color);
     });
   }
 
   /** The real roof height (ellipsoid m) over a footprint: the highest of a few samples inside it. */
-  async _roofOf(polygons, ground) {
+  async _roofOf(polygons, ground, height) {
     const Cesium = this.Cesium;
     const pts = [];
     for (const poly of polygons.slice(0, 4)) {
@@ -673,10 +673,10 @@ export class Realistic3D extends Emitter {
     }
     try {
       const got = await this.viewer.scene.sampleHeightMostDetailed(pts.map(([x, y]) => Cesium.Cartographic.fromDegrees(x, y)), this._ours());
-      const hs = got.map((c) => c?.height).filter((h) => Number.isFinite(h) && h > ground + 2);
-      if (!hs.length) return null;
+      const hs = got.map((c) => c?.height).filter((h) => Number.isFinite(h) && h > ground + 2 && h < ground + Math.max(80, height * 3));
+      if (hs.length < Math.max(2, pts.length / 3)) return null; // not enough of the roof loaded: no outline
       hs.sort((a, b) => a - b);
-      return hs[Math.floor(hs.length * 0.85)]; // high, but not a lone antenna
+      return hs[Math.floor(hs.length / 2)]; // the main roof, not a spire or a lower wing
     } catch {
       return null;
     }
@@ -743,7 +743,7 @@ export class Realistic3D extends Emitter {
     this.agentModels ||= new Map(); // agent id -> { model, kind }
     if (!this.lights) this.lights = scene.primitives.add(new Cesium.BillboardCollection({ scene }));
     const ground = this.lastGround ?? 0;
-    const night = (this.glowUniforms?.nightAmount ?? 0) > 0.12;
+    const night = (this.glowUniforms?.nightAmount ?? 0) > 0.02;
     const cam = Cesium.Cartographic.fromCartesian(this.viewer.camera.positionWC);
     const camLng = Cesium.Math.toDegrees(cam.longitude);
     const camLat = Cesium.Math.toDegrees(cam.latitude);
@@ -797,8 +797,7 @@ export class Realistic3D extends Emitter {
     }
     this.lights.removeAll();
     if (night) {
-      // Head- and taillights at the lamps' real spots on each car (sized in meters, so
-      // they stay on the car at any distance), in marker colors the night pass turns
+      // Head- and taillights at the lamps' real spots on each car, in marker colors the night pass turns
       // into light: see LAMPS_GLSL.
       this.lampImages ||= { head: lampSprite('#ff00ff'), tail: lampSprite('#00ffff') };
       for (const a of shown) {
@@ -808,8 +807,8 @@ export class Realistic3D extends Emitter {
         const fwd = [Math.sin(h), Math.cos(h)];
         const right = [Math.cos(h), -Math.sin(h)];
         const lamps = [
-          [a.length / 2 + 0.08, a.width / 2 - 0.38, 0.68, 'head', 0.36],
-          [-(a.length / 2 + 0.06), a.width / 2 - 0.3, 0.88, 'tail', 0.28],
+          [a.length / 2 + 0.08, a.width / 2 - 0.38, 0.68, 'head', 10],
+          [-(a.length / 2 + 0.06), a.width / 2 - 0.3, 0.88, 'tail', 8],
         ];
         for (const [f, side, up, kind, size] of lamps) {
           for (const sgn of [-1, 1]) {
@@ -820,7 +819,9 @@ export class Realistic3D extends Emitter {
               image: this.lampImages[kind],
               width: size,
               height: size,
-              sizeInMeters: true,
+              // Pixels, shrinking with distance but never below a few: real lamps read
+              // as points of light from far away.
+              scaleByDistance: new Cesium.NearFarScalar(15, 1.4, 900, 0.35),
             });
           }
         }

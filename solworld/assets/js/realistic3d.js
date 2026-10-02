@@ -41,47 +41,90 @@ function loadCesium(base) {
 
 /* ------------------------------------------------------------- shaders */
 
+/** A soft round lamp sprite in a marker color (see LAMPS_GLSL). */
+function lampSprite(color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 32;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, color);
+  grad.addColorStop(0.55, color);
+  grad.addColorStop(1, color + '00');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 32, 32);
+  return c.toDataURL(); // a URL, so Cesium's texture atlas keeps one copy
+}
+
+// Car lamps are drawn as sprites in two marker colors no photo contains
+// (magenta = headlight, cyan = taillight); the night passes turn them into light.
+const LAMPS_GLSL = /* glsl */ `
+float headLamp(vec3 c) { return smoothstep(0.45, 0.8, min(c.r, c.b) - c.g); }
+float tailLamp(vec3 c) { return smoothstep(0.45, 0.8, min(c.g, c.b) - c.r); }
+const vec3 HEAD_COLOR = vec3(1.0, 0.95, 0.84);
+const vec3 TAIL_COLOR = vec3(1.0, 0.1, 0.06);
+`;
+
 // Pass 1: which pixels are lit windows (output: glow color, black elsewhere).
 const MASK_SHADER = /* glsl */ `
 uniform sampler2D colorTexture;
 uniform sampler2D depthTexture;
 uniform float nightAmount;
 uniform float windowShare;
+uniform mat3 enuRot;   // world rotation -> local east/north/up
+uniform vec3 camEnu;   // camera position in that local frame (m; up = above street level)
 in vec2 v_textureCoordinates;
-
+${LAMPS_GLSL}
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float hash13(vec3 p) {
   p = fract(p * 0.1031);
   p += dot(p, p.zyx + 31.32);
   return fract((p.x + p.y) * p.z);
 }
+vec3 eyeAt(vec2 uv) {
+  vec4 e = czm_windowToEyeCoordinates(uv * czm_viewport.zw, texture(depthTexture, uv).r);
+  return e.xyz / e.w;
+}
 
 void main() {
   vec2 uv = v_textureCoordinates;
+  vec3 c = texture(colorTexture, uv).rgb;
   float depth = czm_readDepth(depthTexture, uv);
   if (nightAmount < 0.01 || depth >= 1.0) {
     out_FragColor = vec4(0.0);
     return;
   }
-  // (this helper decodes Cesium's log depth itself, so pass the raw value)
-  vec4 eye = czm_windowToEyeCoordinates(uv * czm_viewport.zw, texture(depthTexture, uv).r);
-  vec3 p = eye.xyz / eye.w;
+  float head = headLamp(c);
+  float tail = tailLamp(c);
+  if (head + tail > 0.0) {
+    out_FragColor = vec4((HEAD_COLOR * head * 1.3 + TAIL_COLOR * tail) * nightAmount, 1.0);
+    return;
+  }
+  vec2 px = 1.0 / czm_viewport.zw;
+  vec3 p = eyeAt(uv);
+  vec3 pr = eyeAt(uv + vec2(px.x, 0.0));
+  vec3 pl = eyeAt(uv - vec2(px.x, 0.0));
+  vec3 pu = eyeAt(uv + vec2(0.0, px.y));
+  vec3 pd = eyeAt(uv - vec2(0.0, px.y));
   float dist = length(p);
-  // Surface orientation from depth: glow only on walls (not roofs or streets).
-  vec3 n = normalize(cross(dFdx(p), dFdy(p)));
-  vec4 world = czm_inverseView * vec4(p, 1.0);
-  vec3 upEye = normalize(czm_viewRotation * normalize(world.xyz));
-  float wall = 1.0 - smoothstep(0.25, 0.45, abs(dot(n, upEye)));
+  // Surface normal from the flatter side of each neighbor pair (no smearing across edges).
+  vec3 dx = abs(pr.z - p.z) < abs(p.z - pl.z) ? pr - p : p - pl;
+  vec3 dy = abs(pu.z - p.z) < abs(p.z - pd.z) ? pu - p : p - pd;
+  vec3 n = normalize(cross(dx, dy));
+  // Depth edges (roof lines, curbs, car outlines): a flat surface has no curvature.
+  float curve = (abs(pr.z + pl.z - 2.0 * p.z) + abs(pu.z + pd.z - 2.0 * p.z)) / dist;
+  float smooth_ = 1.0 - smoothstep(0.003, 0.01, curve);
+
+  // Position and normal in the local frame: up is up, and walls are vertical.
+  vec3 enu = enuRot * (czm_inverseViewRotation * p) + camEnu;
+  vec3 nE = normalize(enuRot * (czm_inverseViewRotation * n));
+  float wall = 1.0 - smoothstep(0.18, 0.32, abs(nE.z));
+  float facing = smoothstep(0.1, 0.3, abs(dot(n, normalize(-p))));
+  float above = smoothstep(3.0, 4.5, enu.z); // no lit windows at street level (cars, shopfronts)
 
   // A window in a real facade photo: darker (glass) than the wall around it.
-  // Compare each pixel with the wall ~1.3 m away (about half a window plus a
-  // bit), converted to pixels from the real surface scale, so whole panes
-  // light up, not just their edges.
-  vec2 px = 1.0 / czm_viewport.zw;
-  // Meters per pixel at this distance (from the camera's field of view).
+  // Compare with the wall ~1.2 m away, converted to pixels from the real scale.
   float metersPerPx = dist * 2.0 / (czm_projection[1][1] * czm_viewport.w);
-  float r = clamp(1.3 / max(metersPerPx, 1e-4), 2.0, 48.0);
-  vec3 c = texture(colorTexture, uv).rgb;
+  float r = clamp(1.2 / max(metersPerPx, 1e-4), 2.0, 40.0);
   float ring = 0.0;
   float ring2 = 0.0;
   for (int i = 0; i < 8; i++) {
@@ -92,17 +135,16 @@ void main() {
   }
   float wallLuma = min(ring, ring2) * 0.6 + max(ring, ring2) * 0.4;
   float darker = wallLuma - luma(c);
-  float window = smoothstep(0.07, 0.2, darker) * (1.0 - smoothstep(0.5, 0.75, luma(c)));
+  float window = smoothstep(0.09, 0.2, darker) * (1.0 - smoothstep(0.45, 0.7, luma(c)));
 
-  // Which windows have the lights on: stable per ~3 m cell of the real world.
-  // (wrapped to small integers: Earth-sized coordinates break the hash precision)
-  vec3 cell = mod(floor(world.xyz / 2.6), 4096.0);
+  // Which rooms have the lights on: one cell per floor (3.4 m) and ~2.4 m of wall,
+  // on a grid that's level with the street, so whole windows switch together.
+  vec3 cell = vec3(mod(floor(enu.x / 2.4), 4096.0), mod(floor(enu.y / 2.4), 4096.0), floor(enu.z / 3.4) + 64.0);
   float on = step(hash13(cell), windowShare);
-  // Mostly warm interior light, a few cooler rooms; each window a little dimmer or brighter.
-  float cool = step(0.92, hash13(cell + 17.0));
-  vec3 tint = mix(vec3(1.0, 0.78, 0.5), vec3(0.86, 0.9, 1.0), cool) * (0.55 + 0.35 * hash13(cell + 41.0));
+  float cool = step(0.9, hash13(cell + 17.0));
+  vec3 tint = mix(vec3(1.0, 0.8, 0.52), vec3(0.86, 0.9, 1.0), cool) * (0.6 + 0.3 * hash13(cell + 41.0));
   float fade = (1.0 - smoothstep(300.0, 1800.0, dist) * 0.8) * (1.0 - smoothstep(1500.0, 2600.0, dist));
-  float glow = window * on * wall * fade * nightAmount;
+  float glow = window * on * wall * facing * smooth_ * above * fade * nightAmount;
   out_FragColor = vec4(tint * glow, 1.0);
 }
 `;
@@ -116,10 +158,12 @@ uniform sampler2D blurTexture;
 uniform float nightAmount;
 uniform float duskAmount;
 in vec2 v_textureCoordinates;
-
+${LAMPS_GLSL}
 void main() {
   vec2 uv = v_textureCoordinates;
   vec3 c = texture(colorTexture, uv).rgb;
+  float head = headLamp(c);
+  float tail = tailLamp(c);
   float depth = czm_readDepth(depthTexture, uv);
   // Dusk: warm, lower light. Night: dark blue, the texture still readable.
   vec3 dusk = c * vec3(1.02, 0.78, 0.62);
@@ -129,7 +173,11 @@ void main() {
   vec3 sharp = texture(maskTexture, uv).rgb;
   vec3 halo = texture(blurTexture, uv).rgb;
   // Soft and even: capped so no window blows out to white.
-  out_FragColor = vec4(graded + min(sharp * 0.6 + halo * 0.55, vec3(0.5)), 1.0);
+  vec3 lit = graded + min(sharp * 0.6 + halo * 0.55, vec3(0.5));
+  // Lamp sprites: the lamp itself, bright, whatever the grade.
+  lit = mix(lit, HEAD_COLOR, head);
+  lit = mix(lit, TAIL_COLOR * 1.1, tail);
+  out_FragColor = vec4(lit, 1.0);
 }
 `;
 
@@ -219,7 +267,7 @@ export class Realistic3D extends Emitter {
   _installGlow() {
     const Cesium = this.Cesium;
     const stages = this.viewer.scene.postProcessStages;
-    const uniforms = { nightAmount: 0, duskAmount: 0, windowShare: 0.2 };
+    const uniforms = { nightAmount: 0, duskAmount: 0, windowShare: 0.22, enuRot: new Cesium.Matrix3(), camEnu: new Cesium.Cartesian3() };
     this.glowUniforms = uniforms;
     const mask = new Cesium.PostProcessStage({
       name: 'sw_window_mask',
@@ -227,7 +275,25 @@ export class Realistic3D extends Emitter {
       uniforms: {
         nightAmount: () => uniforms.nightAmount,
         windowShare: () => uniforms.windowShare,
+        enuRot: () => uniforms.enuRot,
+        camEnu: () => uniforms.camEnu,
       },
+    });
+    // A local frame at street level near the camera (moved only when the camera
+    // travels far), computed in double precision here rather than in the shader.
+    let ref = null;
+    let toLocal = null;
+    this.viewer.scene.preRender.addEventListener(() => {
+      const camPos = this.viewer.camera.positionWC;
+      const ground = this.lastGround ?? 0;
+      if (!ref || Cesium.Cartesian3.distance(ref.pos, camPos) > 6000 || Math.abs(ref.ground - ground) > 4) {
+        const c = Cesium.Cartographic.fromCartesian(camPos);
+        const pos = Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, ground);
+        ref = { pos, ground };
+        toLocal = Cesium.Matrix4.inverseTransformation(Cesium.Transforms.eastNorthUpToFixedFrame(pos), new Cesium.Matrix4());
+        Cesium.Matrix4.getMatrix3(toLocal, uniforms.enuRot);
+      }
+      Cesium.Matrix4.multiplyByPoint(toLocal, camPos, uniforms.camEnu);
     });
     const blur = Cesium.PostProcessStageLibrary.createBlurStage();
     blur.uniforms.sigma = 2.2;
@@ -675,9 +741,9 @@ export class Realistic3D extends Emitter {
     const Cesium = this.Cesium;
     const scene = this.viewer.scene;
     this.agentModels ||= new Map(); // agent id -> { model, kind }
-    if (!this.lights) this.lights = scene.primitives.add(new Cesium.PointPrimitiveCollection());
+    if (!this.lights) this.lights = scene.primitives.add(new Cesium.BillboardCollection({ scene }));
     const ground = this.lastGround ?? 0;
-    const night = this.phase && this.phase !== 'day';
+    const night = (this.glowUniforms?.nightAmount ?? 0) > 0.12;
     const cam = Cesium.Cartographic.fromCartesian(this.viewer.camera.positionWC);
     const camLng = Cesium.Math.toDegrees(cam.longitude);
     const camLat = Cesium.Math.toDegrees(cam.latitude);
@@ -731,18 +797,32 @@ export class Realistic3D extends Emitter {
     }
     this.lights.removeAll();
     if (night) {
-      // A soft halo in front of headlights and behind taillights (the lamps themselves glow in the models).
+      // Head- and taillights at the lamps' real spots on each car (sized in meters, so
+      // they stay on the car at any distance), in marker colors the night pass turns
+      // into light: see LAMPS_GLSL.
+      this.lampImages ||= { head: lampSprite('#ff00ff'), tail: lampSprite('#00ffff') };
       for (const a of shown) {
-        if (a.kind !== 'car' || a.ground == null) continue;
+        if (a.kind !== 'car' || a.ground == null || !this.agentModels.get(a.id)?.model?.show) continue;
         const h = Cesium.Math.toRadians(a.heading);
         const k = 111_320 * Math.cos(Cesium.Math.toRadians(a.lat));
-        for (const [d, color, size] of [[a.length / 2 + 0.6, '#fff4d6', 9], [-(a.length / 2 + 0.3), '#ff3b30', 5]]) {
-          this.lights.add({
-            position: Cesium.Cartesian3.fromDegrees(a.lng + (Math.sin(h) * d) / k, a.lat + (Math.cos(h) * d) / 110_574, a.ground + 0.7),
-            color: Cesium.Color.fromCssColorString(color).withAlpha(0.85),
-            pixelSize: size,
-            scaleByDistance: new Cesium.NearFarScalar(20, 1.8, 800, 0.25),
-          });
+        const fwd = [Math.sin(h), Math.cos(h)];
+        const right = [Math.cos(h), -Math.sin(h)];
+        const lamps = [
+          [a.length / 2 + 0.08, a.width / 2 - 0.38, 0.68, 'head', 0.36],
+          [-(a.length / 2 + 0.06), a.width / 2 - 0.3, 0.88, 'tail', 0.28],
+        ];
+        for (const [f, side, up, kind, size] of lamps) {
+          for (const sgn of [-1, 1]) {
+            const e = fwd[0] * f + right[0] * side * sgn;
+            const n = fwd[1] * f + right[1] * side * sgn;
+            this.lights.add({
+              position: Cesium.Cartesian3.fromDegrees(a.lng + e / k, a.lat + n / 110_574, a.ground + up),
+              image: this.lampImages[kind],
+              width: size,
+              height: size,
+              sizeInMeters: true,
+            });
+          }
         }
       }
     }

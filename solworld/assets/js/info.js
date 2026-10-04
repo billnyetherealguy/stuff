@@ -300,7 +300,18 @@ export function satelliteView({ template, maxZoom = 19, polygons, width, height,
     const k = Math.max(fw / width, fh / height);
     Object.assign(pan.style, { inset: 'auto', width: `${width * k}px`, height: `${height * k}px`, left: `${(fw - width * k) / 2}px`, top: `${(fh - height * k) / 2}px` });
   };
-  if (globalThis.ResizeObserver) new ResizeObserver(cover).observe(frame);
+  if (globalThis.ResizeObserver) {
+    // Let go once the thumbnail leaves the page (it's replaced on every building;
+    // removal shows up here as a resize to nothing).
+    let attached = false;
+    const ro = new ResizeObserver(() => {
+      if (frame.isConnected) {
+        attached = true;
+        cover();
+      } else if (attached) ro.disconnect();
+    });
+    ro.observe(frame);
+  }
   for (let ty = Math.floor(top / 256); ty <= Math.floor((top + height * scale) / 256); ty++) {
     if (ty < 0 || ty >= n2) continue;
     for (let tx = Math.floor(left / 256); tx <= Math.floor((left + width * scale) / 256); tx++) {

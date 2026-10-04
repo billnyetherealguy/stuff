@@ -8,6 +8,7 @@ import { isAddress } from '../solana.js';
 import { avatar, copyText, fmtInt, fmtSol, h, isTouch, shortAddr, who } from '../util.js';
 import { icon } from './icons.js';
 import { openModal } from './feedback.js';
+import { REFERRAL_PERCENT, inviteLink } from '../referral.js';
 
 export class WalletUI {
   constructor(root, ctx) {
@@ -65,6 +66,8 @@ export class WalletUI {
           )
         : null,
       menuItem('building', `My buildings (${owned?.count || 0})`, () => (this.toggleMenu(false), this.ctx.onMine())),
+      menuItem('gift', `Invite friends · earn ${REFERRAL_PERCENT}%`, () => (this.toggleMenu(false), this.invite())),
+      this.ctx.installer?.available ? menuItem('download', 'Install the app', () => (this.toggleMenu(false), this.ctx.installApp())) : null,
       incoming.length ? menuItem('sparkle', `Offers on my buildings (${incoming.length})`, () => (this.toggleMenu(false), this.ctx.onOpenOffer(incoming[0]))) : null,
       myOffers.length ? menuItem('clock', `My open offers (${myOffers.length})`, () => (this.toggleMenu(false), this.ctx.onOpenOffer(myOffers[0]))) : null,
       menuItem('sparkle', this.ctx.myName() ? `Name: ${this.ctx.myName()}` : 'Set your name', () => (this.toggleMenu(false), this.nameDialog())),
@@ -124,6 +127,52 @@ export class WalletUI {
     });
     if (ok) this.deposit();
     return ok;
+  }
+
+  /** Your invite link: friends' first purchases pay you a share, on-chain. */
+  invite() {
+    const { wallet, registry, settings } = this.ctx;
+    const address = wallet.address;
+    if (!address) return this.open();
+    const link = inviteLink(location.origin + location.pathname.replace(/[^/]*$/, ''), address);
+    const mine = registry.state.owners.get(address);
+    const canEarn = mine?.first != null;
+    const share = async () => {
+      const text = `Every building on Earth is for sale on Solworld. Claim yours:`;
+      if (navigator.share) {
+        try {
+          await navigator.share({ title: 'Solworld', text, url: link });
+          return;
+        } catch (err) {
+          if (err?.name === 'AbortError') return;
+        }
+      }
+      await copyText(link);
+      this.ctx.toast({ title: 'Invite link copied', tone: 'success', duration: 1800 });
+    };
+    openModal({
+      eyebrow: `Earn ${REFERRAL_PERCENT}%`,
+      title: 'Invite friends',
+      size: 'sm',
+      content: h(
+        'div',
+        { class: 'invite' },
+        h('p', null, `Share your link. When a friend buys their first building or city, ${REFERRAL_PERCENT}% of what they pay goes straight to your wallet, in the same transaction.`),
+        h('div', { class: 'invite-link' }, h('code', { class: 'deposit-addr' }, link)),
+        h(
+          'div',
+          { class: 'invite-stats' },
+          h('div', null, h('b', null, fmtInt(mine?.referrals || 0)), h('small', null, 'Friends joined')),
+          h('div', null, h('b', null, fmtSol(mine?.referralEarned || 0)), h('small', null, 'SOL earned')),
+        ),
+        canEarn ? null : h('p', { class: 'modal-fine' }, 'Your link starts paying once you own a building yourself.'),
+        settings.live ? null : h('p', { class: 'modal-fine' }, 'Demo mode: nothing real is paid.'),
+      ),
+      actions: [
+        { label: 'Copy link', onClick: async () => (await copyText(link), this.ctx.toast({ title: 'Invite link copied', tone: 'success', duration: 1800 })) },
+        { label: navigator.share ? 'Share' : 'Copy & share', kind: 'primary', onClick: share },
+      ],
+    });
   }
 
   /** Deposit screen. `need` (lamports) highlights how much more is required. */

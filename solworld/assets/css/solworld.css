@@ -3231,6 +3231,11 @@ a {
     height: 50px;
   }
 
+  .hero-cta .hero-install {
+    height: 40px;
+    font-size: 14px;
+  }
+
   .hero-stat b {
     font-size: 22px;
   }
@@ -4061,4 +4066,44 @@ body.has-street #panel {
 body.is-takeover #panel,
 body.is-takeover #hint {
   visibility: hidden;
+}
+
+/* Invite friends */
+.invite {
+  display: grid;
+  gap: 14px;
+}
+.invite p {
+  margin: 0;
+  color: var(--ink-2);
+}
+.invite-link {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.invite-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.invite-stats div {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.invite-stats b {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.invite-stats small {
+  color: var(--ink-3);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }

@@ -26,6 +26,9 @@ import { Realistic3D } from './realistic3d.js';
 import { StreetDrop } from './streetview.js';
 import { TakeoverTool } from './ui/takeover.js';
 import { Traffic } from './traffic.js';
+import { REFERRAL_PERCENT, captureReferral, referralFor } from './referral.js';
+import { Installer, registerServiceWorker } from './pwa.js';
+import { openModal } from './ui/feedback.js';
 import { buildStreetscape } from './streetscape.js';
 import { SIGN_CLASSES } from './mapstyle.js';
 import { OsmClient, buildingHeights, geoKey, geoKeyCenter, isOsmKey } from './osm.js';
@@ -123,6 +126,23 @@ async function boot() {
   const priceCache = new Map();
 
   const me = () => wallet.address;
+  // Installable as an app (home screen, full screen, opens instantly).
+  registerServiceWorker();
+  const installer = new Installer();
+  async function installApp() {
+    const how = await installer.install();
+    if (how !== 'ios') return;
+    const step = (n, text) => h('li', { class: 'step' }, h('span', { class: 'step-n' }, n), h('div', null, h('p', null, text)));
+    openModal({
+      eyebrow: 'Solworld app',
+      title: 'Add to your Home Screen',
+      size: 'sm',
+      content: h('ol', { class: 'steps' }, step(1, 'Tap the Share button in Safari (the square with an arrow).'), step(2, 'Scroll down and tap “Add to Home Screen”.'), step(3, 'Tap “Add”. Solworld opens full screen, like any app.')),
+      actions: [{ label: 'Got it', kind: 'primary' }],
+    });
+  }
+  // An invite link (?ref=<wallet>) is remembered for this visitor's first purchase.
+  const invitedBy = captureReferral(storage);
   const linkedHolder = () => (wallet.address ? registry.state.links.get(wallet.address) || null : null);
   const creditLeft = () => {
     const holder = linkedHolder();
@@ -140,6 +160,8 @@ async function boot() {
     osm,
     storage,
     toast,
+    installer,
+    installApp,
     kindLabel: (tags) => buildingKind(tags),
     priceFor: (building) => {
       if (!priceCache.has(building.key)) priceCache.set(building.key, priceBuilding(building));
@@ -218,6 +240,15 @@ async function boot() {
   const panel = new BuildingPanel($('#panel'), ctx);
   const rail = new Rail($('#rail'), ctx);
   const walletUI = new WalletUI($('#wallet-slot'), ctx);
+  // "Install app" next to the hero's buttons, whenever this browser can install.
+  const installButton = h('button', { class: 'btn btn--ghost btn--lg hero-install', onclick: () => installApp() }, h('span', { svg: icon('download', { size: 18 }) }), 'Install app');
+  const paintInstall = () => (installer.available ? $('#hero .hero-cta')?.append(installButton) : installButton.remove());
+  installer.on('change', paintInstall);
+  setTimeout(paintInstall); // once the hero below has rendered
+  if (invitedBy && invitedBy !== me() && !storage.get('solworld:ref-greeted')) {
+    storage.set('solworld:ref-greeted', true);
+    setTimeout(() => toast({ title: `Invited by ${who(invitedBy)}`, body: `${REFERRAL_PERCENT}% of your first building goes to them, at no extra cost to you.`, tone: 'info', duration: 7000 }), 2500);
+  }
   const stats = new Stats($('#stats'));
   const hero = new Hero($('#hero'), {
     settings,
@@ -863,15 +894,17 @@ async function boot() {
   /* ------------------------------------------------------ transactions */
 
   /** Sends one Solworld action from the Solworld wallet (or simulates it in demo). */
-  async function sendAction({ lamports = 0, memo, extraRefs = [], demo = {} }) {
+  async function sendAction({ lamports = 0, memo, extraRefs = [], demo = {}, referral = null }) {
     if (!live) {
       const fields = parseMemo(memo) || {};
-      const sig = await registry.submit({ ...fields, signers: [me()], transfers: [{ s: me(), d: treasury, l: lamports }], ...demo });
+      const cut = referral?.lamports || 0;
+      const transfers = [{ s: me(), d: treasury, l: lamports - cut }, ...(cut ? [{ s: me(), d: referral.to, l: cut }] : [])];
+      const sig = await registry.submit({ ...fields, signers: [me()], transfers, ...demo });
       if (lamports) wallet.adjustDemoBalance(-lamports);
       return sig;
     }
     const { blockhash } = await rpc.getLatestBlockhash();
-    const message = actionMessage({ from: me(), treasury, reference: registry.address, lamports, memo, extraRefs, priorityFee: settings.priorityFeeMicroLamports }, blockhash);
+    const message = actionMessage({ from: me(), treasury, reference: registry.address, lamports, memo, extraRefs, referral, priorityFee: settings.priorityFeeMicroLamports }, blockhash);
     const sig = await wallet.send(message);
     await rpc.confirm(sig);
     return sig;
@@ -945,13 +978,14 @@ async function boot() {
     }
     await registry.sync().catch(() => {});
     if (registry.state.buildings.has(key)) return void toast({ title: 'Already owned', body: 'Someone just got this building. Make them an offer instead.', tone: 'error' });
-    const memo = buildMemo(kind, { key, center: building.center, price });
+    const referral = kind === 'buy' ? referralFor({ storage, state: registry.state, me: me(), price, treasury }) : null;
+    const memo = buildMemo(kind, { key, center: building.center, price, ref: referral?.to });
     const demo = kind === 'hold' ? { tokens: [{ owner: linkedHolder(), mint: DEMO_COIN.mint, amount: DEMO_HOLDINGS }] } : {};
     await runAction({
       label: labelOf(building),
       pending: kind === 'hold' ? 'Using your holder credit' : `Buying for ${fmtSol(price)} SOL`,
-      success: 'It’s yours!',
-      fn: () => sendAction({ lamports: kind === 'buy' ? price : 0, memo, extraRefs, demo }),
+      success: referral ? `It’s yours! ${who(referral.to)} earned ${fmtSol(referral.lamports)} SOL for inviting you.` : 'It’s yours!',
+      fn: () => sendAction({ lamports: kind === 'buy' ? price : 0, memo, extraRefs, demo, referral }),
       onDone: () => {
         mapc.pulse(building.center, COLORS.mine);
         celebrate();
@@ -1095,14 +1129,15 @@ async function boot() {
       walletUI.deposit({ need: price + FEE_BUFFER - balance });
       return false;
     }
-    const memo = buildMemo('land', { bbox, price, count, title });
+    const referral = referralFor({ storage, state: registry.state, me: me(), price, treasury });
+    const memo = buildMemo('land', { bbox, price, count, title, ref: referral?.to });
     const land = parseMemo(memo);
     const name = land.title || `${who(me())}’s ${tierFor(count).toLowerCase()}`;
     const result = await runAction({
       label: `${name} · ${fmtInt(count)} buildings`,
       pending: `Taking over ${fmtSol(price)} SOL of land`,
       success: `You founded ${name}, a ${tierFor(count).toLowerCase()}!`,
-      fn: () => sendAction({ lamports: price, memo }),
+      fn: () => sendAction({ lamports: price, memo, referral }),
       onDone: () => {
         celebrate();
         mapc.flyToExtent([bbox[0], bbox[3], bbox[2], bbox[1]], { maxZoom: 16 });

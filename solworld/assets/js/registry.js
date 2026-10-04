@@ -7,6 +7,7 @@
 //
 //   solworld:buy:<key>@<lat>,<lng>;p=<lamports>       buy an unowned building
 //   solworld:hold:<key>@<lat>,<lng>;p=<lamports>      take one using meme-coin credit
+//   …;r=<referrer> (on buy / land)                     a friend's invite: see REFERRAL_BPS
 //   solworld:link:<holder>                            link a holder wallet (both sign)
 //   solworld:offer:<key>;p=..;n=<nonce>;v=<value>;s=<buyer signature of the sale>
 //   solworld:cancel:<offer signature>
@@ -39,7 +40,7 @@ const COORD = '(-?\\d{1,2}(?:\\.\\d{1,8})?),(-?\\d{1,3}(?:\\.\\d{1,8})?)';
 const CACHE_VERSION = 3;
 
 const MEMOS = {
-  buy: new RegExp(`^(${KEY})@${COORD};p=(\\d{1,13})$`),
+  buy: new RegExp(`^(${KEY})@${COORD};p=(\\d{1,13})(?:;r=(${ADDR}))?$`),
   hold: new RegExp(`^(${KEY})@${COORD};p=(\\d{1,13})$`),
   link: new RegExp(`^(${ADDR})$`),
   offer: new RegExp(`^(${KEY});p=(\\d{1,13});n=(${ADDR});v=(${ADDR});s=(${SIG})$`),
@@ -50,11 +51,21 @@ const MEMOS = {
   refund: new RegExp(`^(${SIG})$`),
   tiles: /^([A-Za-z0-9_-]{20,64})$/,
   name: /^([A-Za-z0-9%._~!*'()-]{0,160})$/,
-  land: /^(-?\d{1,3}\.\d{1,5}),(-?\d{1,2}\.\d{1,5}),(-?\d{1,3}\.\d{1,5}),(-?\d{1,2}\.\d{1,5});p=(\d{1,16});n=(\d{1,9});t=([A-Za-z0-9%._~!*'()-]{0,200})$/,
+  land: /^(-?\d{1,3}\.\d{1,5}),(-?\d{1,2}\.\d{1,5}),(-?\d{1,3}\.\d{1,5}),(-?\d{1,2}\.\d{1,5});p=(\d{1,16});n=(\d{1,9});t=([A-Za-z0-9%._~!*'()-]{0,200})(?:;r=([1-9A-HJ-NP-Za-km-z]{32,44}))?$/,
   coin: new RegExp(`^(${ADDR});s=([A-Za-z0-9]{1,12});p=(\\d{1,13}(?:\\.\\d{1,9})?)$`),
 };
 
 export const MIN_PRICE = 1_000_000; // protocol floor: 0.001 SOL
+
+/**
+ * Referrals: on a wallet's first purchase (a building or a city), the friend
+ * who invited it may be paid this share of the price directly, in the same
+ * transaction; the treasury then needs only the rest. A protocol constant, not
+ * a setting: changing it would change how past purchases replay.
+ * Counts only if the referrer owned something before and isn't the buyer.
+ */
+export const REFERRAL_BPS = 1000; // 10%
+export const referralCut = (price) => Math.floor((price * REFERRAL_BPS) / 10_000);
 export const SIGN_COLORS = ['#2af5a8', '#8f6bff', '#5ad1ff', '#ffd166', '#ff6b9a', '#ff8a3d', '#ffffff', '#b8ff5a'];
 export const isBuildingKey = (key) => typeof key === 'string' && new RegExp(`^${KEY}$`).test(key);
 
@@ -84,7 +95,8 @@ export function buildMemo(action, fields) {
       if (!isBuildingKey(key)) throw new Error(`Invalid building key: ${key}`);
       const [lng, lat] = center;
       if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180)) throw new Error('Invalid coordinates');
-      return `solworld:${action}:${key}@${fixed(lat)},${fixed(lng)};p=${Math.round(price)}`;
+      const ref = action === 'buy' && fields.ref ? `;r=${fields.ref}` : '';
+      return `solworld:${action}:${key}@${fixed(lat)},${fixed(lng)};p=${Math.round(price)}${ref}`;
     }
     case 'link':
       return `solworld:link:${fields.holder}`;
@@ -101,7 +113,7 @@ export function buildMemo(action, fields) {
     case 'land': {
       // A takeover: everything inside [west, south, east, north].
       const [w, so, e, n] = fields.bbox.map((v) => Number(v).toFixed(5));
-      return `solworld:land:${w},${so},${e},${n};p=${Math.round(fields.price)};n=${Math.round(fields.count)};t=${encodeURIComponent(cleanName(fields.title, 40)).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+      return `solworld:land:${w},${so},${e},${n};p=${Math.round(fields.price)};n=${Math.round(fields.count)};t=${encodeURIComponent(cleanName(fields.title, 40)).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}${fields.ref ? `;r=${fields.ref}` : ''}`;
     }
     case 'name':
       return `solworld:name:${encodeURIComponent(cleanName(fields.name)).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
@@ -131,7 +143,7 @@ export function parseMemo(text) {
       const lat = Number(g[2]);
       const lng = Number(g[3]);
       if (!(lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180)) return null;
-      return { action, key: g[1], lat, lng, price: Number(g[4]) };
+      return { action, key: g[1], lat, lng, price: Number(g[4]), ...(action === 'buy' && g[5] ? { ref: g[5] } : {}) };
     }
     case 'link':
       return { action, holder: g[1] };
@@ -159,7 +171,7 @@ export function parseMemo(text) {
       } catch {
         return null;
       }
-      return { action, bbox, price: Number(g[5]), count: Number(g[6]), title };
+      return { action, bbox, price: Number(g[5]), count: Number(g[6]), title, ...(g[8] ? { ref: g[8] } : {}) };
     }
     case 'name': {
       let name = '';
@@ -291,10 +303,26 @@ export function computeState(events, rules) {
   const ownerRec = (address) => {
     let o = owners.get(address);
     if (!o) {
-      o = { address, count: 0, spent: 0, value: 0, keys: new Set(), territories: [], first: null, last: null };
+      o = { address, count: 0, spent: 0, value: 0, keys: new Set(), territories: [], first: null, last: null, referrals: 0, referralEarned: 0 };
       owners.set(address, o);
     }
     return o;
+  };
+  // A friend's invite on a first purchase (see REFERRAL_BPS): how much of the
+  // price went to the referrer instead of the treasury (0 if it doesn't count).
+  const referralPaid = (ev) => {
+    if (!ev.ref || ev.ref === ev.actor || ev.ref === treasury) return 0;
+    if (owners.get(ev.actor)?.first != null) return 0; // not their first purchase
+    if (owners.get(ev.ref)?.first == null) return 0; // referrer has never owned anything
+    const cut = referralCut(ev.price);
+    return sumTransfers(ev, ev.actor, ev.ref) >= cut ? cut : 0;
+  };
+  const creditReferral = (ev, cut) => {
+    if (!cut) return;
+    const o = ownerRec(ev.ref);
+    o.referrals++;
+    o.referralEarned += cut;
+    totals.volume += cut;
   };
   const take = (address, b, price, time) => {
     const o = ownerRec(address);
@@ -357,6 +385,7 @@ export function computeState(events, rules) {
       // City takeover: pay at least the area's land price; no overlap with
       // earlier takeovers. Everything inside that isn't already owned is theirs.
       const paid = sumTransfers(ev, ev.actor, treasury);
+      const refCut = referralPaid(ev);
       const [w, so, e, n] = ev.bbox;
       if (isRevoked) {
         voidEvent(ev, 'revoked', paid);
@@ -371,7 +400,7 @@ export function computeState(events, rules) {
         continue;
       }
       const floor = landPrice(ev.bbox) * 0.98; // tiny tolerance for float differences between browsers
-      if (!(ev.price >= floor) || paid < ev.price) {
+      if (!(ev.price >= floor) || paid < ev.price - refCut) {
         voidEvent(ev, 'underpaid', paid);
         continue;
       }
@@ -387,7 +416,8 @@ export function computeState(events, rules) {
       totals.lands++;
       totals.volume += paid;
       totals.revenue += paid;
-      const rec = { kind: 'land', key: null, owner: ev.actor, price: ev.price, paid, sig: ev.sig, time: ev.time, lat: (so + n) / 2, lng: (w + e) / 2, title: ev.title, tier: t.tier, count: ev.count };
+      creditReferral(ev, refCut);
+      const rec = { kind: 'land', key: null, owner: ev.actor, price: ev.price, paid, referrer: refCut ? ev.ref : null, sig: ev.sig, time: ev.time, lat: (so + n) / 2, lng: (w + e) / 2, title: ev.title, tier: t.tier, count: ev.count };
       activity.push(rec);
       bySig.set(ev.sig, { record: rec });
       continue;
@@ -395,6 +425,7 @@ export function computeState(events, rules) {
 
     if (ev.action === 'buy' || ev.action === 'hold') {
       const paid = ev.action === 'buy' ? sumTransfers(ev, ev.actor, treasury) : 0;
+      const refCut = ev.action === 'buy' ? referralPaid(ev) : 0;
       if (isRevoked) {
         voidEvent(ev, 'revoked', paid);
         continue;
@@ -411,7 +442,7 @@ export function computeState(events, rules) {
         voidEvent(ev, 'underpaid', paid);
         continue;
       }
-      if (ev.action === 'buy' && paid < ev.price) {
+      if (ev.action === 'buy' && paid < ev.price - refCut) {
         voidEvent(ev, 'underpaid', paid);
         continue;
       }
@@ -438,9 +469,10 @@ export function computeState(events, rules) {
         totals.buys++;
         totals.volume += paid;
         totals.revenue += paid;
+        creditReferral(ev, refCut);
       } else totals.holds++;
       ownerRec(ev.actor).spent += paid;
-      const rec = { kind: ev.action, key: ev.key, owner: ev.actor, price: ev.price, paid, sig: ev.sig, time: ev.time, lat: ev.lat, lng: ev.lng, seed: !!ev.seed };
+      const rec = { kind: ev.action, key: ev.key, owner: ev.actor, price: ev.price, paid, referrer: refCut ? ev.ref : null, sig: ev.sig, time: ev.time, lat: ev.lat, lng: ev.lng, seed: !!ev.seed };
       activity.push(rec);
       bySig.set(ev.sig, { record: rec });
       continue;

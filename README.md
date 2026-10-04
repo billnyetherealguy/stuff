@@ -134,6 +134,16 @@ Tap **Take over**, then drag across the map to select land. Solworld counts the 
 
 Name it and tap **Take over**. One payment to your treasury buys every unowned building in the area. The land glows in the owner's color with its name on the map for everyone, and nobody else can buy a building inside it. Buildings already owned there stay with their owners. The price is deterministic (area × how busy the place is), so every browser can check it.
 
+### Invite friends (referrals)
+
+**Wallet → Invite friends** gives everyone a link like `https://yoursite/?ref=<their wallet>`. When someone opens it and makes their **first** purchase (a building or a city takeover), 10% of the price goes straight to the person who invited them, inside the same Solana transaction; your treasury receives the other 90%. The buyer pays the normal price.
+
+It only counts if the inviter has owned something before and isn't the buyer, so it can't be used as a discount on your own purchases. The 10% is fixed in the code (`REFERRAL_BPS` in `registry.js`), not a setting, because changing it would change how past purchases are checked.
+
+### The app
+
+Solworld installs like an app: **Install app** on the start screen (or in the wallet menu) on Android, Chrome and Edge; on iPhone and iPad it shows the Safari steps (Share → Add to Home Screen). It opens full screen with its own icon, starts instantly, and still opens without a connection. The site's code is always fetched fresh when online, so everyone runs the same rules. Getting it into the App Store and Google Play is a separate step (a wrapper app plus developer accounts); ask if you want that.
+
 ### Rules everyone's browser applies
 
 Each visitor's browser reads the Solworld transactions from Solana and applies the same rules, so everyone sees the same owners:
@@ -147,6 +157,7 @@ Each visitor's browser reads the Solworld transactions from Solana and applies t
 | Billboards | Only the current owner's billboard counts. |
 | Names | First to claim a name keeps it. |
 | Land | Must pay the area's price, must not overlap existing land, at most 8° on a side. Buildings inside can't be bought separately. |
+| Referrals | On a wallet's first purchase only, an inviter who has owned something (and isn't the buyer) may be paid 10% of the price; the treasury then needs the other 90%. |
 
 ### Operator tools
 

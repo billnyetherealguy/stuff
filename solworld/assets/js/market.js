@@ -27,10 +27,14 @@ import { buildMemo, saleFee } from './registry.js';
  * Instructions for a standard action: pay `lamports` (often 0) to the treasury
  * with the registry reference attached, plus the memo.
  */
-export function actionInstructions({ from, treasury, reference, lamports = 0, memo, extraRefs = [], memoSigners = [], priorityFee = 0 }) {
+export function actionInstructions({ from, treasury, reference, lamports = 0, memo, extraRefs = [], memoSigners = [], priorityFee = 0, referral = null }) {
   const ixs = [computeUnitLimitInstruction(40_000)];
   if (priorityFee) ixs.push(computeUnitPriceInstruction(priorityFee));
-  ixs.push(transferInstruction({ from, to: treasury, lamports, references: [reference, ...extraRefs] }), memoInstruction(memo, memoSigners));
+  // A friend's invite (registry REFERRAL_BPS): their share goes to them directly.
+  const cut = referral ? referral.lamports : 0;
+  ixs.push(transferInstruction({ from, to: treasury, lamports: lamports - cut, references: [reference, ...extraRefs] }));
+  if (cut) ixs.push(transferInstruction({ from, to: referral.to, lamports: cut }));
+  ixs.push(memoInstruction(memo, memoSigners));
   return ixs;
 }
 

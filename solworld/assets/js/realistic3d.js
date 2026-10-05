@@ -181,6 +181,16 @@ void main() {
 }
 `;
 
+// Google's photorealistic 3D tiles, tuned light: less detail toward the horizon.
+const TILESET_OPTIONS = {
+  maximumScreenSpaceError: 16,
+  dynamicScreenSpaceError: true,
+  dynamicScreenSpaceErrorDensity: 0.0004,
+  dynamicScreenSpaceErrorFactor: 6,
+  foveatedScreenSpaceError: true,
+  showCreditsOnScreen: true,
+};
+
 /* --------------------------------------------------------------- view */
 
 export class Realistic3D extends Emitter {
@@ -243,16 +253,22 @@ export class Realistic3D extends Emitter {
     const Cesium = this.Cesium;
     if (!this.tilesetPromise) {
       this.tilesetPromise = (async () => {
-        if (this.googleKey) Cesium.GoogleMaps.defaultApiKey = this.googleKey;
-        const tileset = await Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true }, {
-          maximumScreenSpaceError: 16,
-          // Less detail toward the horizon, where it can't be seen anyway: much lighter.
-          dynamicScreenSpaceError: true,
-          dynamicScreenSpaceErrorDensity: 0.0004,
-          dynamicScreenSpaceErrorFactor: 6,
-          foveatedScreenSpaceError: true,
-          showCreditsOnScreen: true,
-        });
+        // Google key directly, else the same tiles through Cesium ion (free). If a
+        // Google key is refused and there's an ion token, fall back to ion.
+        const load = () => {
+          this.source = this.googleKey ? 'google' : 'ion';
+          Cesium.GoogleMaps.defaultApiKey = this.googleKey || undefined;
+          return Cesium.createGooglePhotorealistic3DTileset({ onlyUsingWithGoogleGeocoder: true }, TILESET_OPTIONS);
+        };
+        let tileset;
+        try {
+          tileset = await load();
+        } catch (err) {
+          if (this.source !== 'google' || !this.ionToken) throw err;
+          console.warn('[solworld] Google key refused; using Cesium ion', err);
+          this.googleKey = '';
+          tileset = await load();
+        }
         if (this.tileset) this.viewer.scene.primitives.remove(this.tileset);
         this.tileset = this.viewer.scene.primitives.add(tileset);
         return tileset;

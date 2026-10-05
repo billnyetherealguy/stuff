@@ -341,7 +341,9 @@ async function boot() {
       toast({
         title: 'Realistic 3D didn’t load',
         body: refused
-          ? `Google refused the key. Check: Map Tiles API enabled, billing on, and the key's website restriction matches ${location.origin}. (${why})`
+          ? r3d.source === 'google'
+            ? `Google refused the key. Check: Map Tiles API enabled, billing on, and the key's website restriction matches ${location.origin}. (${why})`
+            : `Cesium ion refused the token. At ion.cesium.com → Access Tokens, add ${location.origin} to the token's Allowed URLs (or leave that list empty). (${why})`
           : `Your device or connection couldn’t load it (${why || 'unknown error'}). The map still works.`,
         tone: 'error',
         duration: 15000,

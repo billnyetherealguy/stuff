@@ -1,0 +1,9 @@
+// Cloudflare Workers: serve the static site in solworld/ (no build step).
+// Deploy command in the Cloudflare dashboard: npx wrangler deploy
+{
+  "name": "solworld",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./solworld"
+  }
+}

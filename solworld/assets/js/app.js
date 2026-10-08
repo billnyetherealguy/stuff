@@ -343,7 +343,7 @@ async function boot() {
         body: refused
           ? r3d.source === 'google'
             ? `Google refused the key. Check: Map Tiles API enabled, billing on, and the key's website restriction matches ${location.origin}. (${why})`
-            : `Cesium ion refused the token. At ion.cesium.com → Access Tokens, add ${location.origin} to the token's Allowed URLs (or leave that list empty). (${why})`
+            : `Cesium ion refused the token. At ion.cesium.com: add “Google Photorealistic 3D Tiles” to My Assets (Asset Depot), and under Access Tokens add ${location.origin} to the token's Allowed URLs. (${why})`
           : `Your device or connection couldn’t load it (${why || 'unknown error'}). The map still works.`,
         tone: 'error',
         duration: 15000,
